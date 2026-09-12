@@ -4,29 +4,14 @@ import math
 import torch
 from torch.optim import Optimizer
 
+from cs336_basics import notation
 
-def cross_entropy(inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-    """
-    手写数值稳定的交叉熵损失函数。
-    支持任意 Batch 维度，最终输出平均 Loss 标量。
-    """
-    # 扁平化多维 batch，将其整理成 (N, vocab_size) 与 (N,)
-    flat_inputs = inputs.reshape(-1, inputs.size(-1))
-    flat_targets = targets.reshape(-1)
+if notation.ACTIVE == notation.EINSTEIN:
+    from cs336_basics.notation.einstein.cross_entropy import cross_entropy
+else:
+    from cs336_basics.notation.no_einstein.cross_entropy import cross_entropy
 
-    # 每一行减去最大值以实现数值稳定
-    max_vals = torch.max(flat_inputs, dim=-1, keepdim=True).values
-    stable_inputs = flat_inputs - max_vals
-
-    # Log-sum-exp 算子
-    log_sum_exp = torch.log(torch.sum(torch.exp(stable_inputs), dim=-1))
-
-    # 获取 target 对应索引上的特征得分
-    target_logits = stable_inputs[torch.arange(flat_targets.size(0)), flat_targets]
-
-    # 平均交叉熵
-    loss = -target_logits + log_sum_exp
-    return torch.mean(loss)
+__all__ = ["cross_entropy", "AdamW"]
 
 
 class AdamW(Optimizer):
@@ -70,7 +55,7 @@ class AdamW(Optimizer):
             for p in group["params"]:
                 if p.grad is None:
                     continue
-                
+
                 grad = p.grad.data
                 state = self.state[p]
 
@@ -90,7 +75,7 @@ class AdamW(Optimizer):
                 # 2. 动量更新
                 m = state["exp_avg"]
                 v = state["exp_avg_sq"]
-                
+
                 # m = beta1 * m + (1 - beta1) * g
                 m.mul_(beta1).add_(grad, alpha=1.0 - beta1)
                 # v = beta2 * v + (1 - beta2) * g^2

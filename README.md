@@ -30,6 +30,23 @@ Initially, all tests should fail with `NotImplementedError`s.
 To connect your implementation to the tests, complete the
 functions in [./tests/adapters.py](./tests/adapters.py).
 
+### Two implementation styles: plain PyTorch vs. Einstein notation
+
+This repo ships **two complete, numerically equivalent implementations** of the
+Assignment 1 model code (see [./NOTATION.md](./NOTATION.md)):
+
+* `no_einstein` — plain PyTorch: `@` / `matmul`, `reshape` / `transpose`, slicing.
+* `einstein` — Einstein notation: the unified `einx` API only (`einx.dot`, `einx.id`, `einx.softmax`, ...).
+
+Select one with the `CS336_NOTATION` environment variable (default `einstein`):
+
+```sh
+CS336_NOTATION=no_einstein uv run pytest
+CS336_NOTATION=einstein uv run pytest
+```
+
+The official tests pass under both selections and need no changes.
+
 ### Download data
 Download the TinyStories data and a subsample of OpenWebText
 
