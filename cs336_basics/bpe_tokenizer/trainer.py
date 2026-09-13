@@ -148,59 +148,72 @@ def pre_merge(
 def apply_merge(
     word_freqs: dict[tuple[bytes, ...], int],
     pair_freqs: dict[tuple[bytes, bytes], int],
+    pair_to_words: dict[tuple[bytes, bytes], set[tuple[bytes, ...]]],
     best_pair: tuple[bytes, bytes],
-) -> tuple[dict[tuple[bytes, ...], int], dict[tuple[bytes, bytes], int]]:
+) -> tuple[
+    dict[tuple[bytes, ...], int],
+    dict[tuple[bytes, bytes], int],
+    dict[tuple[bytes, bytes], set[tuple[bytes, ...]]],
+]:
     """
-    把一次 merge 应用到当前状态，返回下一轮循环需要的 (word_freqs, pair_freqs)。
+    把一次 merge 应用到当前状态，返回下一轮循环需要的
+    (word_freqs, pair_freqs, pair_to_words)。
 
-    这块逻辑就是「两次循环之间的状态变化」：对包含 best_pair 的词型做增量更新——
-      - 只重写真正的相邻对，词型频次 count 不变；
-      - 扣除旧词型贡献的相邻对频次、累加新词型贡献的相邻对频次（避免每轮全量重扫）；
-    最后清理频次已经降为 0 或以下的相邻对。
+    用**倒排索引** pair_to_words（pair -> 含它的词型集合）只遍历「真正包含 best_pair」
+    的词型，不再每轮扫描全部词型。对每个受影响的词型做增量更新：
+      - 扣除旧词型贡献的相邻对频次，并从倒排索引里摘掉它；
+      - 重写词型：把所有相邻的 best_pair 合并成 merged；
+      - 累加新词型贡献的相邻对频次，并把它加入倒排索引；
+    最后清理频次已经降为 0 或以下的相邻对（连同倒排索引项）。
     """
     best_0, best_1 = best_pair
     merged = best_0 + best_1
 
-    new_word_freqs = defaultdict(int)
-    for word_tuple, count in word_freqs.items():
-        # 只有当词元组中同时包含要合并的两个元素时，才进行重构
-        if best_0 in word_tuple and best_1 in word_tuple:
-            new_tuple = []
-            i = 0
-            changed = False
-            while i < len(word_tuple):
-                if i < len(word_tuple) - 1 and word_tuple[i] == best_0 and word_tuple[i+1] == best_1:
-                    new_tuple.append(merged)
-                    i += 2
-                    changed = True
-                else:
-                    new_tuple.append(word_tuple[i])
-                    i += 1
-            if changed:
-                t = tuple(new_tuple)
-                new_word_freqs[t] += count
+    affected = list(pair_to_words.get(best_pair, ()))
+    touched: set[tuple[bytes, bytes]] = set()
 
-                # 极其关键的性能优化：仅增量更新受影响词的相邻对频次（避免 O(N^2) 全量统计）
-                # 扣除旧词元组产生的相邻对频次
-                for j in range(len(word_tuple) - 1):
-                    pair_freqs[(word_tuple[j], word_tuple[j+1])] -= count
-                # 累加新词元组产生的相邻对频次
-                for j in range(len(t) - 1):
-                    pair_freqs[(t[j], t[j+1])] += count
+    for word_tuple in affected:
+        count = word_freqs.pop(word_tuple, 0)
+
+        # 扣除旧词型贡献的相邻对频次，并从倒排索引里摘掉它
+        for j in range(len(word_tuple) - 1):
+            pair = (word_tuple[j], word_tuple[j + 1])
+            pair_freqs[pair] -= count
+            touched.add(pair)
+            words = pair_to_words.get(pair)
+            if words is not None:
+                words.discard(word_tuple)
+
+        # 重写词型：把所有相邻的 best_pair 合并成 merged
+        new_tuple = []
+        i = 0
+        while i < len(word_tuple):
+            if i < len(word_tuple) - 1 and word_tuple[i] == best_0 and word_tuple[i + 1] == best_1:
+                new_tuple.append(merged)
+                i += 2
             else:
-                new_word_freqs[word_tuple] += count
-        else:
-            new_word_freqs[word_tuple] += count
+                new_tuple.append(word_tuple[i])
+                i += 1
+        t = tuple(new_tuple)
+
+        # 累加新词型贡献的相邻对频次，并把它加入倒排索引
+        word_freqs[t] = word_freqs.get(t, 0) + count
+        for j in range(len(t) - 1):
+            pair = (t[j], t[j + 1])
+            pair_freqs[pair] += count
+            touched.add(pair)
+            pair_to_words.setdefault(pair, set()).add(t)
 
     # 及时清理掉频次已经降为 0 或以下的相邻对，缩减字典体积，提升查找速度
-    for key in [p for p, freq in pair_freqs.items() if freq <= 0]:
-        del pair_freqs[key]
+    for pair in touched:
+        if pair_freqs.get(pair, 0) <= 0:
+            pair_freqs.pop(pair, None)
+            pair_to_words.pop(pair, None)
 
-    return new_word_freqs, pair_freqs
+    return word_freqs, pair_freqs, pair_to_words
 
 
 def build_vocab(
-
     merges: list[tuple[bytes, bytes]],
     special_tokens: list[str],
 ) -> dict[int, bytes]:
@@ -233,7 +246,6 @@ def build_vocab(
 
 
 def run_train_bpe(
-
     input_path: str | os.PathLike,
     vocab_size: int,
     special_tokens: list[str],
@@ -252,11 +264,14 @@ def run_train_bpe(
     # 3. 执行 BPE 合并循环
     merges: list[tuple[bytes, bytes]] = []
     
-    # 初始化统计所有相邻字节/Token对的频次
-    pair_freqs = defaultdict(int)
+    # 初始化统计所有相邻对的频次，并建立倒排索引 pair -> 含它的词型集合
+    pair_freqs: dict[tuple[bytes, bytes], int] = defaultdict(int)
+    pair_to_words: dict[tuple[bytes, bytes], set[tuple[bytes, ...]]] = defaultdict(set)
     for word_tuple, count in word_freqs.items():
         for i in range(len(word_tuple) - 1):
-            pair_freqs[(word_tuple[i], word_tuple[i+1])] += count
+            pair = (word_tuple[i], word_tuple[i + 1])
+            pair_freqs[pair] += count
+            pair_to_words[pair].add(word_tuple)
 
     # ===================================================================
     # 🎯 为什么我们需要合并的步数是 vocab_size - 256 - len(special_tokens)？
@@ -292,7 +307,7 @@ def run_train_bpe(
         merges.append(best_pair)
 
         # 应用这次 merge，得到下一轮迭代需要的状态
-        word_freqs, pair_freqs = apply_merge(word_freqs, pair_freqs, best_pair)
+        word_freqs, pair_freqs, pair_to_words = apply_merge(word_freqs, pair_freqs, pair_to_words, best_pair)
 
     # 4. 合并结束后的词表组装（post-merge）
     return build_vocab(merges, special_tokens), merges
