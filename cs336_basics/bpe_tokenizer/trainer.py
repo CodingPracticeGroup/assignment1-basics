@@ -98,13 +98,6 @@ def pretokenize_text(text: str) -> dict[tuple[bytes, ...], int]:
     return freqs
 
 
-def process_chunk(chunk_text: str) -> dict[tuple[bytes, ...], int]:
-    """
-    多进程（multiprocessing）包装函数，用于并行对文本块进行预分词统计。
-    """
-    return pretokenize_text(chunk_text)
-
-
 def pre_merge(
     corpus: str,
     special_tokens: list[str],
@@ -140,7 +133,7 @@ def pre_merge(
     if total_len > 500_000 and len(pieces) > 1:
         num_workers = min(multiprocessing.cpu_count(), 8)
         with multiprocessing.Pool(processes=num_workers) as pool:
-            results = pool.map(process_chunk, pieces)
+            results = pool.map(pretokenize_text, pieces)
         for res in results:
             for k, v in res.items():
                 word_freqs[k] += v
