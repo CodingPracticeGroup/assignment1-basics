@@ -180,9 +180,8 @@ def apply_merge(
             pair = (word_tuple[j], word_tuple[j + 1])
             pair_freqs[pair] -= count
             touched.add(pair)
-            words = pair_to_words.get(pair)
-            if words is not None:
-                words.discard(word_tuple)
+            # 不变量：当前词型里的 pair 一定已在倒排索引中（初始化时加入，清理只删频次为 0 的 pair）
+            pair_to_words[pair].discard(word_tuple)
 
         # 重写词型：把所有相邻的 best_pair 合并成 merged
         new_tuple = []
