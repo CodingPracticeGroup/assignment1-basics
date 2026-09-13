@@ -48,8 +48,7 @@ CS336_NOTATION=einstein uv run pytest
 The official tests pass under both selections and need no changes.
 
 ### Download data
-Download the TinyStories data and a subsample of OpenWebText.
-See [./DATA.md](./DATA.md) for the exact URLs, sizes and SHA256 checksums used in this repo.
+Download the TinyStories data and a subsample of OpenWebText
 
 ``` sh
 mkdir -p data
