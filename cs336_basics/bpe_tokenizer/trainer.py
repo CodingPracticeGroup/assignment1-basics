@@ -145,7 +145,40 @@ def pre_merge(
     return word_freqs
 
 
+def build_vocab(
+    merges: list[tuple[bytes, bytes]],
+    special_tokens: list[str],
+) -> dict[int, bytes]:
+    """
+    合并（merge）结束后的词表组装（post-merge）：把三部分按固定顺序拼成最终 vocab。
+
+    最终词表 = 256 个基础单字节 + 特殊 Token + 训练学出的 BPE merges，ID 分配顺序：
+      - 0..255          : 标准单字节 0..255
+      - 256..256+|S|-1  : special_tokens（按传入顺序）
+      - 其后            : 每次合并产生的新 token（按 merges 顺序）
+    """
+    vocab: dict[int, bytes] = {}
+
+    # 1. 标准基础单字节 0..255
+    for b in range(256):
+        vocab[b] = bytes([b])
+
+    # 2. 特殊 Token
+    curr_id = 256
+    for s_token in special_tokens:
+        vocab[curr_id] = s_token.encode("utf-8")
+        curr_id += 1
+
+    # 3. 合并产物
+    for pair in merges:
+        vocab[curr_id] = pair[0] + pair[1]
+        curr_id += 1
+
+    return vocab
+
+
 def run_train_bpe(
+
     input_path: str | os.PathLike,
     vocab_size: int,
     special_tokens: list[str],
@@ -250,23 +283,5 @@ def run_train_bpe(
         for k in keys_to_del:
             del pair_freqs[k]
 
-    # 5. 构筑并输出词表：
-    # 256 个基础单字节 + 特殊 Token 列表 + 训练学习出的 BPE merges
-    vocab = {}
-    
-    # 注入标准基础单字节 0..255
-    for b in range(256):
-        vocab[b] = bytes([b])
-        
-    curr_id = 256
-    # 注入特殊 Token
-    for s_token in special_tokens:
-        vocab[curr_id] = s_token.encode("utf-8")
-        curr_id += 1
-        
-    # 注入合并产物
-    for pair in merges:
-        vocab[curr_id] = pair[0] + pair[1]
-        curr_id += 1
-
-    return vocab, merges
+    # 4. 合并结束后的词表组装（post-merge）
+    return build_vocab(merges, special_tokens), merges
