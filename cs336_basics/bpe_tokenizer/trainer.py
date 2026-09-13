@@ -220,23 +220,18 @@ def run_train_bpe(
     # 例如：vocab_size = 500，special_tokens 数量为 1，则合并次数 = 500 - 256 - 1 = 243 次。
     # ===================================================================
     num_merges = vocab_size - 256 - len(special_tokens)
-    
+
+    def pair_priority(pair: tuple[bytes, bytes]) -> tuple[int, tuple[bytes, bytes]]:
+        # 排序键 = (频次, pair)：先比频次，并列时比 pair 的字典序（等价于原实现的 tie-break）
+        return (pair_freqs[pair], pair)
+
     for _ in range(num_merges):
         if not pair_freqs:
             break
 
-        # 寻找频次最高的相邻对，若有并列最高频次，按照 tuple 字典序最大者（max）打破平局（Tie-breaking）
-        max_freq = -1
-        best_pair = None
-        for pair, freq in pair_freqs.items():
-            if freq > max_freq:
-                max_freq = freq
-                best_pair = pair
-            elif freq == max_freq:
-                if pair > best_pair:
-                    best_pair = pair
-
-        if max_freq <= 0 or best_pair is None:
+        # 寻找频次最高的相邻对；并列时按 pair 字典序最大者打破平局（Tie-breaking）
+        best_pair = max(pair_freqs, key=pair_priority)
+        if pair_freqs[best_pair] <= 0:
             break
 
         merges.append(best_pair)
