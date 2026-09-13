@@ -105,30 +105,23 @@ def process_chunk(chunk_text: str) -> dict[tuple[bytes, ...], int]:
     return pretokenize_text(chunk_text)
 
 
-def run_train_bpe(
-    input_path: str | os.PathLike,
-    vocab_size: int,
+def pre_merge(
+    corpus: str,
     special_tokens: list[str],
-    **kwargs,
-) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
+) -> dict[tuple[bytes, ...], int]:
     """
-    在输入语料库上训练字节级（byte-level）的 BPE 分词器，并输出最终词表与合并顺序。
-    """
-    # 1. 读取输入文本文件
-    with open(input_path, "r", encoding="utf-8", errors="ignore") as f:
-        corpus = f.read()
+    把整篇语料变成「词型（byte-tuple）-> 频次」的统计表，供 BPE 合并阶段使用。
 
-    # ===================================================================
-    # 🎯 逐行大白话拆解特殊 Token 硬分割机制：
-    # ===================================================================
-    # 1. re.escape(token): 给特殊 Token 加“防爆盾”（转义正则敏感符号，如 | 变成 \| ）。
-    #    确保正则匹配时只当死板字符串对待，不触发正则分词魔法。
-    # 2. "|".join(...): 使用 “或” 拼装。如果 special_tokens 是 ["<|eot|>", "[[pad]]"]，
-    #    会编译为 regex 组合模板：(<\|eot\|>|\[\[pad\]\])。
-    # 3. split_pattern.split(corpus): 拿着大砍刀去切整篇 corpus 语料。凡是碰到特殊 Token
-    #    就拦腰切断，如 "文章1<|endoftext|>文章2" 切成 ["文章1", "文章2"] 两个干净切片。
-    #    这构建了完美的物理硬隔离墙：我们在合并相邻字符时，绝对不会跨越文章边界瞎合并！
-    # ===================================================================
+    这就是 pre-tokenization（预分词），也叫 pre-merge：它是「主要 tokenize / 合并
+    之前」的准备步骤。输入一篇 string 语料，输出可直接喂给合并循环的词频表。
+
+    步骤：
+    1. 特殊 Token 硬分割：re.escape 转义后按「或」拼成正则，遇到特殊 Token 就把
+       语料拦腰切断，保证 BPE 绝不跨越文档边界瞎合并。
+    2. 对每个切片做正则预分词（pretokenize_text），统计字节元组词型频次。
+    3. 切片够大且不止一个时，用 multiprocessing 并行统计，再合并各进程结果。
+    """
+    # 1. 特殊 Token 硬分割（hard boundaries）
     if special_tokens:
         escaped_specials = [re.escape(token) for token in special_tokens]
         split_pattern = re.compile("|".join(escaped_specials))
@@ -137,20 +130,13 @@ def run_train_bpe(
         pieces = [corpus]
 
     pieces = [p for p in pieces if p]
+    if not pieces:
+        return {}
 
-    # 3. 对切分后的语料块进行预分词并汇总频次
-    word_freqs = defaultdict(int)
+    # 2. 预分词并汇总频次（大语料用多进程：每个 worker 动态抢任务）
+    word_freqs: dict[tuple[bytes, ...], int] = defaultdict(int)
     total_len = sum(len(p) for p in pieces)
 
-    # ===================================================================
-    # 🎯 逐行大白话拆解 pool.map 多进程自适应调度机制：
-    # ===================================================================
-    # 1. multiprocessing.Pool(8) 会在操作系统级开辟 8 个空闲待命的 Worker 子进程。
-    # 2. pool.map 会把 pieces（哪怕有 13 个）塞入内部的“待办任务队列”中。
-    # 3. 8 个子进程会一拥而上抢走前 8 个任务。剩下的 5 个任务在队列里排队。
-    # 4. 任何一个柜台（进程）算完手头的，会自适应抢单领走第 9、10、11 个任务。
-    # 5. 这属于典型的“8 窗口服务 13 排队顾客”的动态接力，自适应调度完美避开死锁和漏单。
-    # ===================================================================
     if total_len > 500_000 and len(pieces) > 1:
         num_workers = min(multiprocessing.cpu_count(), 8)
         with multiprocessing.Pool(processes=num_workers) as pool:
@@ -163,7 +149,26 @@ def run_train_bpe(
             for k, v in pretokenize_text(piece).items():
                 word_freqs[k] += v
 
-    # 4. 执行 BPE 合并循环
+    return word_freqs
+
+
+def run_train_bpe(
+    input_path: str | os.PathLike,
+    vocab_size: int,
+    special_tokens: list[str],
+    **kwargs,
+) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
+    """
+    在输入语料库上训练字节级（byte-level）的 BPE 分词器，并输出最终词表与合并顺序。
+    """
+    # 1. 读取输入文本文件
+    with open(input_path, encoding="utf-8", errors="ignore") as f:
+        corpus = f.read()
+
+    # 2. 预分词（pre-tokenization / pre-merge）：特殊 Token 硬分割 + 正则预分词 + 频次汇总
+    word_freqs = pre_merge(corpus, special_tokens)
+
+    # 3. 执行 BPE 合并循环
     merges: list[tuple[bytes, bytes]] = []
     
     # 初始化统计所有相邻字节/Token对的频次
