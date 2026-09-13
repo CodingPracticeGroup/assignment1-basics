@@ -145,7 +145,62 @@ def pre_merge(
     return word_freqs
 
 
+def apply_merge(
+    word_freqs: dict[tuple[bytes, ...], int],
+    pair_freqs: dict[tuple[bytes, bytes], int],
+    best_pair: tuple[bytes, bytes],
+) -> tuple[dict[tuple[bytes, ...], int], dict[tuple[bytes, bytes], int]]:
+    """
+    把一次 merge 应用到当前状态，返回下一轮循环需要的 (word_freqs, pair_freqs)。
+
+    这块逻辑就是「两次循环之间的状态变化」：对包含 best_pair 的词型做增量更新——
+      - 只重写真正的相邻对，词型频次 count 不变；
+      - 扣除旧词型贡献的相邻对频次、累加新词型贡献的相邻对频次（避免每轮全量重扫）；
+    最后清理频次已经降为 0 或以下的相邻对。
+    """
+    best_0, best_1 = best_pair
+    merged = best_0 + best_1
+
+    new_word_freqs = defaultdict(int)
+    for word_tuple, count in word_freqs.items():
+        # 只有当词元组中同时包含要合并的两个元素时，才进行重构
+        if best_0 in word_tuple and best_1 in word_tuple:
+            new_tuple = []
+            i = 0
+            changed = False
+            while i < len(word_tuple):
+                if i < len(word_tuple) - 1 and word_tuple[i] == best_0 and word_tuple[i+1] == best_1:
+                    new_tuple.append(merged)
+                    i += 2
+                    changed = True
+                else:
+                    new_tuple.append(word_tuple[i])
+                    i += 1
+            if changed:
+                t = tuple(new_tuple)
+                new_word_freqs[t] += count
+
+                # 极其关键的性能优化：仅增量更新受影响词的相邻对频次（避免 O(N^2) 全量统计）
+                # 扣除旧词元组产生的相邻对频次
+                for j in range(len(word_tuple) - 1):
+                    pair_freqs[(word_tuple[j], word_tuple[j+1])] -= count
+                # 累加新词元组产生的相邻对频次
+                for j in range(len(t) - 1):
+                    pair_freqs[(t[j], t[j+1])] += count
+            else:
+                new_word_freqs[word_tuple] += count
+        else:
+            new_word_freqs[word_tuple] += count
+
+    # 及时清理掉频次已经降为 0 或以下的相邻对，缩减字典体积，提升查找速度
+    for key in [p for p, freq in pair_freqs.items() if freq <= 0]:
+        del pair_freqs[key]
+
+    return new_word_freqs, pair_freqs
+
+
 def build_vocab(
+
     merges: list[tuple[bytes, bytes]],
     special_tokens: list[str],
 ) -> dict[int, bytes]:
@@ -236,47 +291,8 @@ def run_train_bpe(
 
         merges.append(best_pair)
 
-        # 在词频表中对最佳对进行增量合并更新
-        best_0, best_1 = best_pair
-        merged = best_0 + best_1
-
-        new_word_freqs = defaultdict(int)
-        for word_tuple, count in word_freqs.items():
-            # 只有当词元组中同时包含要合并的两个元素时，才进行重构
-            if best_0 in word_tuple and best_1 in word_tuple:
-                new_tuple = []
-                i = 0
-                changed = False
-                while i < len(word_tuple):
-                    if i < len(word_tuple) - 1 and word_tuple[i] == best_0 and word_tuple[i+1] == best_1:
-                        new_tuple.append(merged)
-                        i += 2
-                        changed = True
-                    else:
-                        new_tuple.append(word_tuple[i])
-                        i += 1
-                if changed:
-                    t = tuple(new_tuple)
-                    new_word_freqs[t] += count
-                    
-                    # 极其关键的性能优化：仅增量更新受影响词的相邻对频次（避免 $O(N^2)$ 全量统计）
-                    # 扣除旧词元组产生的相邻对频次
-                    for j in range(len(word_tuple) - 1):
-                        pair_freqs[(word_tuple[j], word_tuple[j+1])] -= count
-                    # 累加新词元组产生的相邻对频次
-                    for j in range(len(t) - 1):
-                        pair_freqs[(t[j], t[j+1])] += count
-                else:
-                    new_word_freqs[word_tuple] += count
-            else:
-                new_word_freqs[word_tuple] += count
-
-        word_freqs = new_word_freqs
-
-        # 及时清理掉频次已经降为 0 或以下的相邻对，缩减字典体积，提升查找速度
-        keys_to_del = [pair for pair, freq in pair_freqs.items() if freq <= 0]
-        for k in keys_to_del:
-            del pair_freqs[k]
+        # 应用这次 merge，得到下一轮迭代需要的状态
+        word_freqs, pair_freqs = apply_merge(word_freqs, pair_freqs, best_pair)
 
     # 4. 合并结束后的词表组装（post-merge）
     return build_vocab(merges, special_tokens), merges
