@@ -148,7 +148,10 @@ def pre_merge_file(
         if len(pieces) > 1 and sum(len(piece) for piece in pieces) > 500_000:
             if pool is None:
                 pool = multiprocessing.Pool(processes=num_workers)
-            for result in pool.map(pretokenize_text, pieces):
+            # 用 imap_unordered 边完成边累加，避免 pool.map 把整个 chunk 的结果列表一次性驻留内存；
+            # 频次是求和，与顺序无关，所以无序返回不影响结果。
+            chunksize = max(1, len(pieces) // (num_workers * 4))
+            for result in pool.imap_unordered(pretokenize_text, pieces, chunksize=chunksize):
                 _accumulate(result)
         else:
             for piece in pieces:
