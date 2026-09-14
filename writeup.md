@@ -811,7 +811,7 @@ _Deliverable:_ Logging infrastructure code for your experiments and an experimen
 
 **日志基础设施**（已实现在 `scripts/train.py`）：每个实验一个 Weights and Biases run，`config=vars(args)` 完整记录超参（模型规模、lr、schedule、batch size、grad-clip、dtype、seed、数据路径等）。通过 `wandb.define_metric("step")`、`wandb.define_metric("wall_time")` 与 `define_metric("*", step_metric="step")`，每个指标既能对**梯度步**、也能对**墙钟时间**作图。每个日志点记录：`train/loss`、`train/perplexity`、`lr`、`tokens_per_sec`、`wall_time`、`step`；验证时记录 `val/loss`、`val/perplexity`、`wall_time`。除 wandb 外保留纯文本 stdout 日志；checkpoint 记录 iteration 以便恢复。默认关闭，`--wandb` 开启（可用 `WANDB_MODE=offline` 离线跑）。
 
-另有两条**无需账号**的本地路径：`--log-csv PATH`（零依赖，写 CSV，见 `cs336_basics/training/experiment_log.py`）与 `--tensorboard DIR`（本地 TensorBoard，`http://localhost:6006`；x 轴可切 `Step`/`Wall`，后者即墙钟时间）。注意 wandb 离线模式只把数据写到 `wandb/offline-run-*`，要出网页图仍需 `wandb sync`（那步需要账号）。
+另有一条**无需账号**的本地路径：`--tensorboard DIR`（本地 TensorBoard，`http://localhost:6006`；x 轴可切 `Step`/`Wall`，后者即墙钟时间）。注意 wandb 离线模式只把数据写到 `wandb/offline-run-*`，要出网页图仍需 `wandb sync`（那步需要账号）。
 
 **实验日志**（每个 run 一行；结果列在各实验执行后填入——**TODO（结果）**）：
 

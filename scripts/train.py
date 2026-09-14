@@ -24,7 +24,6 @@ from cs336_basics.model.transformer import BasicsTransformerLM
 from cs336_basics.training.checkpointer import load_checkpoint, save_checkpoint
 from cs336_basics.training.clipping import run_gradient_clipping
 from cs336_basics.training.dataloader import run_get_batch
-from cs336_basics.training.experiment_log import CsvLogger
 from cs336_basics.training.metrics import perplexity_from_loss
 from cs336_basics.training.optimizers import AdamW, cross_entropy
 from cs336_basics.training.schedulers import run_get_lr_cosine_schedule
@@ -61,8 +60,7 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--save-every", type=int, default=1000)
     ap.add_argument("--checkpoint", default=None, help="checkpoint 输出路径")
     ap.add_argument("--resume", default=None, help="从该 checkpoint 恢复")
-    ap.add_argument("--log-csv", default=None, help="把指标写成 CSV（零依赖、无需 wandb 账号）")
-    ap.add_argument("--tensorboard", default=None, help="TensorBoard logdir（本地可视化、无需账号；需先装 tensorboard）")
+    ap.add_argument("--tensorboard", default=None, help="TensorBoard logdir（本地可视化、无需账号）")
     # 运行时
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--dtype", default="float32", choices=["float32", "bfloat16", "float16"])
@@ -140,8 +138,6 @@ def main() -> None:
         wandb_run.define_metric("wall_time")
         wandb_run.define_metric("*", step_metric="step")
 
-    csv_logger = CsvLogger(args.log_csv) if args.log_csv else None
-
     tb_writer = None
     if args.tensorboard:
         try:
@@ -204,16 +200,6 @@ def main() -> None:
                 tb_writer.add_scalar("train/learning_rate", lr, step)
                 tb_writer.add_scalar("train/tokens_per_sec", tokens_per_sec, step)
                 # 想按墙钟时间看曲线时，用 TensorBoard UI 左上角的 x 轴切到 "Wall"
-            if csv_logger is not None:
-                csv_logger.log(
-                    step=step,
-                    wall_time=elapsed,
-                    split="train",
-                    loss=train_loss,
-                    perplexity=perplexity_from_loss(train_loss),
-                    lr=lr,
-                    tokens_per_sec=tokens_per_sec,
-                )
             last_log_time = now
             tokens_since_log = 0
 
@@ -224,14 +210,6 @@ def main() -> None:
             if tb_writer is not None:
                 tb_writer.add_scalar("val/loss", val_loss, step)
                 tb_writer.add_scalar("val/perplexity", val_ppl, step)
-            if csv_logger is not None:
-                csv_logger.log(
-                    step=step,
-                    wall_time=time.time() - t0,
-                    split="val",
-                    loss=val_loss,
-                    perplexity=val_ppl,
-                )
             if wandb_run:
                 wandb_run.log(
                     {
@@ -253,8 +231,6 @@ def main() -> None:
         print(f"final checkpoint -> {args.checkpoint}")
     if tb_writer is not None:
         tb_writer.close()
-    if csv_logger is not None:
-        csv_logger.close()
     if wandb_run:
         wandb_run.finish()
 
