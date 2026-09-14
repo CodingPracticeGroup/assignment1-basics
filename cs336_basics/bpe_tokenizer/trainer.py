@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import codecs
 import multiprocessing
 import os
 from collections import defaultdict
@@ -147,6 +146,35 @@ def pre_merge(
     return word_freqs
 
 
+def _read_span_through_special(
+    f,
+    min_bytes: int,
+    special_bytes: list[bytes],
+) -> bytes:
+    """从 f 当前位置读至少 min_bytes，并向后读到一个特殊 Token 之后为止。
+
+    若缓冲区里找到了特殊 Token，就把文件指针退回到该 Token 之后，使下一段从
+    文档边界开始（本段与下一段拼起来正好覆盖整个文件，且不切断任何文档）。
+    """
+    buf = f.read(min_bytes)
+    if not buf:
+        return b""
+    while True:
+        cut = -1
+        for token in special_bytes:
+            pos = buf.rfind(token)
+            if pos != -1:
+                cut = max(cut, pos + len(token))
+        if cut != -1:
+            if cut < len(buf):
+                f.seek(cut - len(buf), os.SEEK_CUR)
+            return buf[:cut]
+        more = f.read(min_bytes)
+        if not more:
+            return buf
+        buf += more
+
+
 def pre_merge_file(
     input_path: str | os.PathLike,
     special_tokens: list[str],
@@ -156,17 +184,20 @@ def pre_merge_file(
     """
     从文件**流式**做 pre-tokenization（pre-merge），内存有界，结果与 pre_merge 完全一致。
 
-    每次只读一个 chunk（默认 128 MiB），只提交**确定完整**的 pre-token，把可能被 chunk
-    截断的尾巴留到下一次读取再拼接，因此内存上界 ≈ chunk_bytes + 累计词型表，可处理远
-    大于内存的语料（例如 12GB 的 OpenWebText）。有无特殊 Token 都走流式：
+    依赖数据里有特殊 Token（本作业的语料一定含 `<|endoftext|>`）：每次读 chunk_bytes，
+    再向后读到「刚好越过一个特殊 Token」为止，把这一整段解码后做预分词。切点紧跟 ASCII
+    特殊 Token 之后，**天然是合法的 UTF-8 边界**，所以不需要处理「字符被切开」的问题。
 
-    * 有特殊 Token：把 chunk 对齐到「最后一个特殊 Token 之后」，chunk 内部的文档用多进程
-      并行预分词；
-    * 无特殊 Token：用增量 UTF-8 解码器把字节流变成文本，每次只提交「除最后一个正则匹配
-      之外」的所有匹配；最后一个匹配可能是被 chunk 截断的 pre-token，携带到下一块重新匹配
-      （正则没有 lookbehind，所以从匹配起点继续扫与整篇扫描等价）。
+    实测两个相邻特殊 Token 之间最长为 ~164 KiB（见 DATA.md 7.4），所以每次多读的量很小，
+    内存上界 ≈ chunk_bytes + 累计词型表。没有特殊 Token 时没有安全切点，退回整篇 pre_merge。
     """
+    if not special_tokens:
+        with open(input_path, encoding="utf-8", errors="ignore") as f:
+            return pre_merge(f.read(), [])
+
     chunk_bytes = max(chunk_bytes, 1 << 20)
+    special_bytes = [token.encode("utf-8") for token in special_tokens]
+    split_pattern = re.compile("|".join(re.escape(token) for token in special_tokens))
 
     word_freqs: dict[tuple[bytes, ...], int] = defaultdict(int)
     if num_workers is None:
@@ -188,61 +219,13 @@ def pre_merge_file(
             for piece in pieces:
                 _accumulate(pretokenize_text(piece))
 
-    if special_tokens:
-        special_bytes = [token.encode("utf-8") for token in special_tokens]
-        split_pattern = re.compile("|".join(re.escape(token) for token in special_tokens))
-        remainder = b""
-        with open(input_path, "rb") as f:
-            while True:
-                chunk = f.read(chunk_bytes)
-                eof = chunk == b""
-                buffer = remainder + chunk
-
-                if not eof:
-                    # 对齐到「最后一个特殊 Token 之后」，保证不切断文档
-                    cut = -1
-                    for special in special_bytes:
-                        pos = buffer.rfind(special)
-                        if pos != -1:
-                            cut = max(cut, pos + len(special))
-                    if cut == -1:
-                        remainder = buffer
-                        continue
-                    process, remainder = buffer[:cut], buffer[cut:]
-                else:
-                    process, remainder = buffer, b""
-
-                if process:
-                    text = process.decode("utf-8", errors="ignore")
-                    _pretokenize_pieces([p for p in split_pattern.split(text) if p])
-
-                if eof:
-                    break
-    else:
-        # 没有特殊 Token：增量解码 + 只提交除最后一个匹配外的所有 pre-token
-        decoder = codecs.getincrementaldecoder("utf-8")("ignore")
-        remainder_text = ""
-        with open(input_path, "rb") as f:
-            while True:
-                chunk = f.read(chunk_bytes)
-                eof = chunk == b""
-                text = remainder_text + decoder.decode(chunk, final=eof)
-                if not text:
-                    if eof:
-                        break
-                    continue
-
-                matches = [match.group(0) for match in compiled_pat.finditer(text)]
-                if eof:
-                    _pretokenize_pieces(matches)
-                    break
-
-                # 最后一个匹配可能被 chunk 截断，留到下一块重新匹配
-                if matches:
-                    _pretokenize_pieces(matches[:-1])
-                    remainder_text = matches[-1]
-                else:
-                    remainder_text = text
+    with open(input_path, "rb") as f:
+        while True:
+            segment = _read_span_through_special(f, chunk_bytes, special_bytes)
+            if not segment:
+                break
+            text = segment.decode("utf-8", errors="ignore")
+            _pretokenize_pieces([p for p in split_pattern.split(text) if p])
 
     if pool is not None:
         pool.close()
