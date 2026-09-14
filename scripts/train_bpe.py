@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import pickle
 import threading
 import time
-from collections.abc import Iterable
 
 import psutil
 
+from cs336_basics.bpe_tokenizer.base import _gpt2_bytes_to_unicode
 from cs336_basics.bpe_tokenizer.trainer import run_train_bpe
 
 
@@ -60,6 +61,23 @@ def main() -> None:
         pickle.dump(vocab, f)
     with open(os.path.join(args.out_dir, "merges.pkl"), "wb") as f:
         pickle.dump(merges, f)
+
+    # 同时导出 GPT-2 文本格式，便于 Tokenizer.from_files / 其他工具加载
+    byte_to_unicode = _gpt2_bytes_to_unicode()
+    with open(os.path.join(args.out_dir, "vocab.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {"".join(byte_to_unicode[b] for b in token): tid for tid, token in vocab.items()},
+            f,
+            ensure_ascii=False,
+        )
+    with open(os.path.join(args.out_dir, "merges.txt"), "w", encoding="utf-8") as f:
+        for first, second in merges:
+            f.write(
+                "".join(byte_to_unicode[b] for b in first)
+                + " "
+                + "".join(byte_to_unicode[b] for b in second)
+                + "\n"
+            )
 
     print(f"input={args.input}")
     print(f"vocab_size_target={args.vocab_size} actual_vocab={len(vocab)} merges={len(merges)}")

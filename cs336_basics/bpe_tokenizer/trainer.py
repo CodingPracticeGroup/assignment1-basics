@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import heapq
 import multiprocessing
 import os
 from collections import defaultdict
@@ -179,6 +180,38 @@ def pre_merge_file(
     return word_freqs
 
 
+class _MaxPair:
+    """
+    heapq 是小顶堆，但我们想每次弹出「频次最高；并列时 pair 字典序最大」的对。
+
+    因此把比较键「反向」定义：频次越高、pair 越大，就在 __lt__ 下越「小」，从而被优先弹出。
+    堆里允许存放**过期记录**（stale），取出时用当前 pair_freqs 校验（lazy invalidation）。
+    """
+
+    __slots__ = ("freq", "pair")
+
+    def __init__(self, freq: int, pair: tuple[bytes, bytes]) -> None:
+        self.freq = freq
+        self.pair = pair
+
+    def __lt__(self, other: _MaxPair) -> bool:
+        if self.freq != other.freq:
+            return self.freq > other.freq  # 频次高者视为更「小」-> 先弹出
+        return self.pair > other.pair  # 并列时 pair 字典序大者视为更「小」-> 先弹出
+
+
+def _push_updates(
+    heap: list[_MaxPair],
+    pair_freqs: dict[tuple[bytes, bytes], int],
+    touched: set[tuple[bytes, bytes]],
+) -> None:
+    """把本轮频次发生变化的 pair 的**当前**频次重新入堆（旧记录成为 stale，取出时丢弃）。"""
+    for pair in touched:
+        freq = pair_freqs.get(pair, 0)
+        if freq > 0:
+            heapq.heappush(heap, _MaxPair(freq, pair))
+
+
 def apply_merge(
     word_freqs: dict[tuple[bytes, ...], int],
     pair_freqs: dict[tuple[bytes, bytes], int],
@@ -188,6 +221,7 @@ def apply_merge(
     dict[tuple[bytes, ...], int],
     dict[tuple[bytes, bytes], int],
     dict[tuple[bytes, bytes], set[tuple[bytes, ...]]],
+    set[tuple[bytes, bytes]],
 ]:
     """
     把一次 merge 应用到当前状态，返回下一轮循环需要的
@@ -199,6 +233,8 @@ def apply_merge(
       - 重写词型：把所有相邻的 best_pair 合并成 merged；
       - 累加新词型贡献的相邻对频次，并把它加入倒排索引；
     最后清理频次已经降为 0 或以下的相邻对（连同倒排索引项）。
+
+    第 4 个返回值是本次**频次发生过变化**的相邻对集合 touched，供最大堆做增量入堆。
     """
     best_0, best_1 = best_pair
     merged = best_0 + best_1
@@ -243,7 +279,8 @@ def apply_merge(
             pair_freqs.pop(pair, None)
             pair_to_words.pop(pair, None)
 
-    return word_freqs, pair_freqs, pair_to_words
+    # touched 是「频次发生过变化」的相邻对集合，供堆（lazy invalidation）重新入堆
+    return word_freqs, pair_freqs, pair_to_words, touched
 
 
 def build_vocab(
@@ -321,23 +358,36 @@ def run_train_bpe(
     # ===================================================================
     num_merges = vocab_size - 256 - len(special_tokens)
 
-    def pair_priority(pair: tuple[bytes, bytes]) -> tuple[int, tuple[bytes, bytes]]:
-        # 排序键 = (频次, pair)：先比频次，并列时比 pair 的字典序（等价于原实现的 tie-break）
-        return (pair_freqs[pair], pair)
+    # 用**最大堆**维护「下一个要合并的 pair」，把每轮的选择从 O(pair 数) 降到摊还 O(log heap)。
+    # 堆元素是 _MaxPair(freq, pair)，__lt__ 已按「频次高优先、并列 pair 字典序大优先」反向定义；
+    # 每次 apply_merge 后只把频次变化的 pair（touched）重新入堆，旧记录成为 stale，取出时校验丢弃。
+    heap = [_MaxPair(freq, pair) for pair, freq in pair_freqs.items()]
+    heapq.heapify(heap)
 
     for _ in range(num_merges):
-        if not pair_freqs:
+        # lazy invalidation：弹掉堆顶那些频次已与当前 pair_freqs 不一致（或已消失）的过期记录
+        while heap:
+            node = heap[0]
+            if node.freq > 0 and pair_freqs.get(node.pair, 0) == node.freq:
+                break
+            heapq.heappop(heap)
+        if not heap:
             break
 
-        # 寻找频次最高的相邻对；并列时按 pair 字典序最大者打破平局（Tie-breaking）
-        best_pair = max(pair_freqs, key=pair_priority)
-        if pair_freqs[best_pair] <= 0:
-            break
-
+        # 此时堆顶就是「频次最高；并列时 pair 字典序最大」的合法 pair（tie-break 与原实现一致）
+        best_pair = heap[0].pair
         merges.append(best_pair)
 
         # 应用这次 merge，得到下一轮迭代需要的状态
-        word_freqs, pair_freqs, pair_to_words = apply_merge(word_freqs, pair_freqs, pair_to_words, best_pair)
+        word_freqs, pair_freqs, pair_to_words, touched = apply_merge(
+            word_freqs, pair_freqs, pair_to_words, best_pair
+        )
+
+        # 把频次变化的 pair 重新入堆；堆过大时重建，防止 stale 记录无限累积（空间换时间）
+        _push_updates(heap, pair_freqs, touched)
+        if len(heap) > 8 * (len(pair_freqs) + 1):
+            heap = [_MaxPair(freq, pair) for pair, freq in pair_freqs.items()]
+            heapq.heapify(heap)
 
     # 4. 合并结束后的词表组装（post-merge）
     return build_vocab(merges, special_tokens), merges

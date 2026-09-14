@@ -1,12 +1,38 @@
 from __future__ import annotations
 
+import json
 import os
-import regex as re
 from collections.abc import Iterable, Iterator
+
+import regex as re
 
 # 预分词正则表达式（GPT-2 经典风格）
 PAT = r"'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"
 compiled_pat = re.compile(PAT)
+
+
+def _gpt2_bytes_to_unicode() -> dict[int, str]:
+    """
+    GPT-2 的「字节 -> 可打印 unicode 字符」双射，用于把 0..255 的原始字节
+    可逆地写进 JSON / 文本文件（否则 b'\x00' 之类的不可打印字节无法安全序列化）。
+    """
+    bs = (
+        list(range(ord("!"), ord("~") + 1))
+        + list(range(ord("¡"), ord("¬") + 1))
+        + list(range(ord("®"), ord("ÿ") + 1))
+    )
+    cs = bs[:]
+    n = 0
+    for b in range(2 ** 8):
+        if b not in bs:
+            bs.append(b)
+            cs.append(2 ** 8 + n)
+            n += 1
+    return dict(zip(bs, [chr(c) for c in cs]))
+
+
+# unicode 字符 -> 原始字节（from_files 反序列化用）
+_UNICODE_TO_BYTE = {char: byte for byte, char in _gpt2_bytes_to_unicode().items()}
 
 
 class Tokenizer:
@@ -41,14 +67,47 @@ class Tokenizer:
     @classmethod
     def from_files(
         cls,
-        vocab_filepath: str,
-        merges_filepath: str,
+        vocab_filepath: str | os.PathLike,
+        merges_filepath: str | os.PathLike,
         special_tokens: list[str] | None = None,
     ) -> Tokenizer:
         """
-        类方法：用于从反序列化磁盘文件中加载并构造 Tokenizer。
+        类方法：从磁盘上的 GPT-2 序列化文件加载并构造 Tokenizer。
+
+        文件格式（与 GPT-2 / 官方测试 fixture 一致）：
+          - vocab_filepath : JSON，{"<unicode 可打印形式的 token>": <int id>}
+          - merges_filepath: 文本，每行 "tokenA tokenB"（空格分隔，按合并顺序排列）
+        两个文件里的 token 都经过 GPT-2 的 byte<->unicode 双射编码，这里反解回原始 bytes。
+        若 special_tokens 中有词表里不存在的项，则按传入顺序追加到词表末尾。
         """
-        raise NotImplementedError("目前该方法未在测试桩中显式调用。")
+        with open(vocab_filepath, encoding="utf-8") as f:
+            gpt2_vocab: dict[str, int] = json.load(f)
+        vocab: dict[int, bytes] = {
+            idx: bytes([_UNICODE_TO_BYTE[ch] for ch in token]) for token, idx in gpt2_vocab.items()
+        }
+
+        merges: list[tuple[bytes, bytes]] = []
+        with open(merges_filepath, encoding="utf-8") as f:
+            for line in f:
+                cleaned = line.rstrip()
+                # 只跳过 GPT-2 官方 merges.txt 的版本头（"#version: ..."）；
+                # 注意 "# e" 这类是**合法** merge（'#' 字节本身可参与合并），不能一并跳过。
+                if not cleaned or cleaned.startswith("#version"):
+                    continue
+                parts = cleaned.split(" ")
+                if len(parts) != 2:
+                    continue
+                merges.append(tuple(bytes([_UNICODE_TO_BYTE[ch] for ch in part]) for part in parts))
+
+        if special_tokens:
+            existing = set(vocab.values())
+            for special_token in special_tokens:
+                encoded = special_token.encode("utf-8")
+                if encoded not in existing:
+                    vocab[len(vocab)] = encoded
+                    existing.add(encoded)
+
+        return cls(vocab, merges, special_tokens)
 
     def encode(self, text: str) -> list[int]:
         """
@@ -89,8 +148,7 @@ class Tokenizer:
         通过按行或按块处理来节省内存，符合 1MB 常数级低显存测试。
         """
         for text in iterable:
-            for token_id in self.encode(text):
-                yield token_id
+            yield from self.encode(text)
 
     def decode(self, ids: list[int]) -> str:
         """
