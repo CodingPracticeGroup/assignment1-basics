@@ -45,6 +45,16 @@ import regex as re
 PAT = r"'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"
 compiled_pat = re.compile(PAT)
 
+# 单字节 token 查表（0..255 -> b"\x00"..b"\xff"），模块层复用，避免热路径反复分配
+_BYTE_TOKENS = tuple(bytes([b]) for b in range(256))
+_wt_get = _BYTE_TOKENS.__getitem__
+
+# pre-token 字符串 -> 字节元组的缓存：预分词里同一个词会重复出现成千上万次，
+# 缓存把「构造字节元组」的成本从 O(出现次数) 降到 O(唯一词型数)。
+# 每个 worker 进程各有一份；设上限防止超长语料上无限增长。
+_word_tuple_cache: dict[str, tuple[bytes, ...]] = {}
+_WORD_TUPLE_CACHE_LIMIT = 1 << 20
+
 
 def pretokenize_text(text: str) -> dict[tuple[bytes, ...], int]:
     """
@@ -79,7 +89,9 @@ def pretokenize_text(text: str) -> dict[tuple[bytes, ...], int]:
     ===================================================================
     """
     freqs = defaultdict(int)
-    
+    cache = _word_tuple_cache
+    cache_limit = _WORD_TUPLE_CACHE_LIMIT
+
     # ===================================================================
     # 🎯 逐行大白话拆解 match 雷达扫描循环：
     # ===================================================================
@@ -94,8 +106,12 @@ def pretokenize_text(text: str) -> dict[tuple[bytes, ...], int]:
     #    由于 BPE 只能合并相邻字符，用 tuple 承载是最快、最完美的哈希键（Keys）。
     # ===================================================================
     for match in compiled_pat.finditer(text):
-        word_bytes = match.group(0).encode("utf-8")
-        word_tuple = tuple(bytes([b]) for b in word_bytes)
+        word = match.group(0)
+        word_tuple = cache.get(word)
+        if word_tuple is None:
+            word_tuple = tuple(map(_wt_get, word.encode("utf-8")))
+            if len(cache) < cache_limit:
+                cache[word] = word_tuple
         freqs[word_tuple] += 1
     return freqs
 

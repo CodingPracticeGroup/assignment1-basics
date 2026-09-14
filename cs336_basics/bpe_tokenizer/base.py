@@ -10,6 +10,10 @@ import regex as re
 PAT = r"'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"
 compiled_pat = re.compile(PAT)
 
+# 单字节 token 查表：0..255 -> b"\x00"..b"\xff"。
+# 放在模块层，避免在 encode 热路径里对每个字节反复调用 bytes([b]) 分配新对象。
+_BYTE_TOKENS = tuple(bytes([b]) for b in range(256))
+
 
 def _gpt2_bytes_to_unicode() -> dict[int, str]:
     """
@@ -54,6 +58,11 @@ class Tokenizer:
 
         # 将 merges 链转换为相邻对的哈希优先级字典（合并顺序索引越小，优先级越高，需最先合并）
         self.merge_priorities = {pair: idx for idx, pair in enumerate(merges)}
+
+        # pre-token(bytes) -> token id 列表的缓存：自然文本里 pre-token 高度重复，
+        # 缓存能避免对同一子词反复做 BPE 合并。设上限以免在超长语料上无限增长。
+        self._encode_cache: dict[bytes, list[int]] = {}
+        self._encode_cache_limit = 1 << 20
 
         # 如果存在特殊 Token，编译一个高效匹配特殊 Token 的正则表达式
         if self.special_tokens:
@@ -136,9 +145,16 @@ class Tokenizer:
                     ids.append(self.byte_to_id[part_bytes])
             else:
                 # 否则，对标准文本片段执行正则预分词，并对每一个子词执行高能 BPE 优先合并
+                cache = self._encode_cache
+                cache_limit = self._encode_cache_limit
                 for match in compiled_pat.finditer(part):
                     word_bytes = match.group(0).encode("utf-8")
-                    ids.extend(self._encode_word(word_bytes))
+                    cached = cache.get(word_bytes)
+                    if cached is None:
+                        cached = self._encode_word(word_bytes)
+                        if len(cache) < cache_limit:
+                            cache[word_bytes] = cached
+                    ids.extend(cached)
 
         return ids
 
@@ -170,37 +186,45 @@ class Tokenizer:
         if not word_bytes:
             return []
 
-        # 初始化词表示为单字节列表
-        symbols = [bytes([b]) for b in word_bytes]
+        priorities = self.merge_priorities
+        # 初始化词表示为单字节列表（查表复用单字节对象，避免分配）
+        symbols = [_BYTE_TOKENS[b] for b in word_bytes]
+        inf = float("inf")
 
         while len(symbols) > 1:
-            # 寻找当前相邻符号对中，合并优先级最高（在 self.merge_priorities 中索引最小）的一对
+            # 寻找当前相邻符号对中，合并优先级最高（merge_priorities 里索引最小）的一对
             best_pair = None
-            best_priority = float("inf")
-            for i in range(len(symbols) - 1):
-                pair = (symbols[i], symbols[i+1])
-                priority = self.merge_priorities.get(pair, float("inf"))
+            best_priority = inf
+            prev = symbols[0]
+            for i in range(1, len(symbols)):
+                cur = symbols[i]
+                pair = (prev, cur)
+                priority = priorities.get(pair, inf)
                 if priority < best_priority:
                     best_priority = priority
                     best_pair = pair
+                prev = cur
 
-            # 如果不存在任何可以继续合并的对，则退出循环
-            if best_pair is None or best_priority == float("inf"):
+            # 若不存在任何可继续合并的对（全部 priority == inf），best_pair 保持 None
+            if best_pair is None:
                 break
 
             # 贪心地从左到右合并所有等于 best_pair 的相邻对
-            new_symbols = []
-            i = 0
             best_0, best_1 = best_pair
             merged = best_0 + best_1
-            while i < len(symbols):
-                if i < len(symbols) - 1 and symbols[i] == best_0 and symbols[i+1] == best_1:
-                    new_symbols.append(merged)
+            new_symbols = []
+            append = new_symbols.append
+            i = 0
+            n = len(symbols)
+            while i < n:
+                if i < n - 1 and symbols[i] == best_0 and symbols[i + 1] == best_1:
+                    append(merged)
                     i += 2
                 else:
-                    new_symbols.append(symbols[i])
+                    append(symbols[i])
                     i += 1
             symbols = new_symbols
 
         # 将最终合并后的各个子词字节流映射回它们的词表整数 ID
-        return [self.byte_to_id[sym] for sym in symbols]
+        byte_to_id = self.byte_to_id
+        return [byte_to_id[sym] for sym in symbols]
