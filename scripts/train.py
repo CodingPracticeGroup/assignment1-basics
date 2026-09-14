@@ -29,6 +29,7 @@ import numpy as np
 import torch
 
 from cs336_basics.model.transformer import BasicsTransformerLM
+from cs336_basics.training.ablations import apply_variant
 from cs336_basics.training.checkpointer import load_checkpoint, save_checkpoint
 from cs336_basics.training.clipping import run_gradient_clipping
 from cs336_basics.training.dataloader import run_get_batch
@@ -74,6 +75,7 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--tensorboard", default=None, help="TensorBoard logdir（本地可视化、无需账号）")
     ap.add_argument("--sdpa", action="store_true", help="用 PyTorch 融合 SDPA 替代手写注意力（更快、数学等价；训练不再走我们自己的 attention 实现）")
     ap.add_argument("--compile", action="store_true", help="torch.compile 模型（融合 elementwise，no_einstein 下实测 ~1.8x、更省显存）")
+    ap.add_argument("--variant", default="baseline", choices=["baseline", "no_rmsnorm", "post_norm", "no_rope", "silu"], help="handout 7.3 消融变体")
     # 运行时
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--dtype", default="float32", choices=["float32", "bfloat16", "float16"])
@@ -151,8 +153,10 @@ def main() -> None:
         args.d_ff,
         args.rope_theta,
     ).to(device)
+    if args.variant != "baseline":
+        model = apply_variant(model, args.variant)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"model params: {n_params/1e6:.2f}M | device={device} dtype={args.dtype}")
+    print(f"model params: {n_params/1e6:.2f}M | device={device} dtype={args.dtype} | variant={args.variant}")
     if args.compile:
         # no_einstein（plain ops）下 torch.compile 能把 elementwise 链融合，实测 ~1.8x 且更省显存；
         # einstein（einx 动态轴）下反而更慢，故默认关闭。
