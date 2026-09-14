@@ -2,13 +2,21 @@
 
 配合 scripts/tokenize_dataset.py 产出的 uint16 .bin（用 np.memmap 省内存读取）。
 
-用法示例：
+handout §7.2.1 的 baseline（**从这里开始 tune**）：
+    vocab=10000, context=256, d_model=512, d_ff=1344, RoPE θ=10000,
+    4 layers / 16 heads, 总 token ≈ 327,680,000（= batch × steps × context）。
+    其余（learning rate / warmup / AdamW 的 β/ε / weight decay）需要自己 tune。
+
+用法示例（TinyStories baseline）：
   uv run python scripts/train.py \
       --train-bin artifacts/tinystories_10k_stream/train.bin \
       --val-bin   artifacts/tinystories_10k_stream/valid.bin \
-      --vocab-size 10000 --context-length 256 --d-model 512 --num-layers 4 --num-heads 16 \
-      --d-ff 1344 --batch-size 32 --max-steps 20000 --lr 1e-3 --warmup-iters 200 \
-      --cosine-cycle-iters 20000 --checkpoint artifacts/runs/tinystories/ckpt.pt
+      --vocab-size 10000 --context-length 256 --d-model 512 --num-layers 4 \
+      --num-heads 16 --d-ff 1344 --rope-theta 10000 \
+      --batch-size 64 --max-steps 20000 \
+      --lr 1e-3 --warmup-iters 200 \
+      --checkpoint artifacts/runs/tinystories_base/ckpt.pt \
+      --tensorboard artifacts/runs/tinystories_base/tb
 """
 
 from __future__ import annotations
@@ -30,6 +38,9 @@ from cs336_basics.training.schedulers import run_get_lr_cosine_schedule
 
 
 def build_argparser() -> argparse.ArgumentParser:
+    # 默认值即 handout §7.2.1 的 baseline（vocab=10000, ctx=256, d_model=512,
+    # 4 layers / 16 heads, d_ff=1344, θ=10000；batch 64 × steps 20000 × ctx 256
+    # = 327,680,000 tokens）。lr / warmup / AdamW / weight decay 需自己 tune。
     ap = argparse.ArgumentParser()
     # 数据
     ap.add_argument("--train-bin", required=True, help="uint16 token id 二进制（np.memmap）")
@@ -39,7 +50,7 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--context-length", type=int, default=256)
     ap.add_argument("--d-model", type=int, default=512)
     ap.add_argument("--num-layers", type=int, default=4)
-    ap.add_argument("--num-heads", type=int, default=8)
+    ap.add_argument("--num-heads", type=int, default=16, help="baseline: 4 层 16 头")
     ap.add_argument("--d-ff", type=int, default=1344)
     ap.add_argument("--rope-theta", type=float, default=10000.0)
     # 优化器
@@ -52,7 +63,7 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--cosine-cycle-iters", type=int, default=20000)
     ap.add_argument("--grad-clip", type=float, default=1.0)
     # 循环
-    ap.add_argument("--batch-size", type=int, default=32)
+    ap.add_argument("--batch-size", type=int, default=64, help="baseline: 64*20000*256 = 327.68M tokens")
     ap.add_argument("--max-steps", type=int, default=20000)
     ap.add_argument("--val-every", type=int, default=500)
     ap.add_argument("--val-batches", type=int, default=20)
