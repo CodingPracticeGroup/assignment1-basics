@@ -132,9 +132,15 @@ def main() -> None:
         wandb_run = wandb.init(
             project=args.wandb_project, name=args.wandb_run_name, config=vars(args)
         )
+        # 每个指标既可按「梯度步」(step) 也可按「墙钟时间」(wall_time) 作图
+        wandb_run.define_metric("step")
+        wandb_run.define_metric("wall_time")
+        wandb_run.define_metric("*", step_metric="step")
 
     model.train()
     t0 = time.time()
+    last_log_time = t0
+    tokens_since_log = 0
     for step in range(start_step, args.max_steps):
         lr = run_get_lr_cosine_schedule(
             step, args.lr, args.min_lr, args.warmup_iters, args.cosine_cycle_iters
@@ -143,6 +149,7 @@ def main() -> None:
             group["lr"] = lr
 
         x, y = run_get_batch(train_data, args.batch_size, args.context_length, device)
+        tokens_since_log += x.numel()
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(device_type=amp_device, dtype=amp_dtype, enabled=amp_dtype is not None):
             logits = model(x)
@@ -152,20 +159,44 @@ def main() -> None:
         optimizer.step()
 
         if step % args.log_every == 0:
-            elapsed = time.time() - t0
+            now = time.time()
+            elapsed = now - t0
+            tokens_per_sec = tokens_since_log / max(now - last_log_time, 1e-9)
+            train_loss = loss.item()
             print(
-                f"step {step:6d} | lr {lr:.3e} | loss {loss.item():.4f} | {elapsed:.1f}s",
+                f"step {step:6d} | lr {lr:.3e} | loss {train_loss:.4f} | "
+                f"{elapsed:.1f}s | {tokens_per_sec / 1e3:.1f}k tok/s",
                 flush=True,
             )
             if wandb_run:
-                wandb_run.log({"train/loss": loss.item(), "lr": lr, "step": step}, step=step)
+                wandb_run.log(
+                    {
+                        "train/loss": train_loss,
+                        "train/perplexity": perplexity_from_loss(train_loss),
+                        "lr": lr,
+                        "tokens_per_sec": tokens_per_sec,
+                        "wall_time": elapsed,
+                        "step": step,
+                    },
+                    step=step,
+                )
+            last_log_time = now
+            tokens_since_log = 0
 
         if val_data is not None and args.val_every > 0 and (step + 1) % args.val_every == 0:
             val_loss = evaluate(model, val_data, args, device, amp_device, amp_dtype)
             val_ppl = perplexity_from_loss(val_loss)
             print(f"step {step:6d} | val loss {val_loss:.4f} | val ppl {val_ppl:.2f}", flush=True)
             if wandb_run:
-                wandb_run.log({"val/loss": val_loss, "val/perplexity": val_ppl, "step": step}, step=step)
+                wandb_run.log(
+                    {
+                        "val/loss": val_loss,
+                        "val/perplexity": val_ppl,
+                        "wall_time": time.time() - t0,
+                        "step": step,
+                    },
+                    step=step,
+                )
 
         if args.checkpoint and args.save_every > 0 and (step + 1) % args.save_every == 0:
             os.makedirs(os.path.dirname(args.checkpoint) or ".", exist_ok=True)

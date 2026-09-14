@@ -809,7 +809,7 @@ _Deliverable:_ Logging infrastructure code for your experiments and an experimen
 
 **Answer:**
 
-**日志基础设施**（计划在 `train.py` 中实现）：每个实验一个 Weights and Biases run，完整记录配置（模型规模、tokenizer、lr、schedule、batch size、grad-clip、dtype、seed）。通过 `wandb.define_metric("step")` 与 `wandb.define_metric("wall_time")` 让每个指标既能对梯度步、也能对墙钟时间作图；同时周期性记录验证 loss、tokens/s 和（推算的）MFU。除 wandb 外保留纯文本 stdout 日志，checkpoint 里记录 iteration 以便恢复训练。
+**日志基础设施**（已实现在 `scripts/train.py`）：每个实验一个 Weights and Biases run，`config=vars(args)` 完整记录超参（模型规模、lr、schedule、batch size、grad-clip、dtype、seed、数据路径等）。通过 `wandb.define_metric("step")`、`wandb.define_metric("wall_time")` 与 `define_metric("*", step_metric="step")`，每个指标既能对**梯度步**、也能对**墙钟时间**作图。每个日志点记录：`train/loss`、`train/perplexity`、`lr`、`tokens_per_sec`、`wall_time`、`step`；验证时记录 `val/loss`、`val/perplexity`、`wall_time`。除 wandb 外保留纯文本 stdout 日志；checkpoint 记录 iteration 以便恢复。默认关闭，`--wandb` 开启（可用 `WANDB_MODE=offline` 离线跑）。
 
 **实验日志**（每个 run 一行；结果列在各实验执行后填入——**TODO（结果）**）：
 
