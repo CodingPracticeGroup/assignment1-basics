@@ -40,7 +40,8 @@ class Embedding(nn.Module):
         nn.init.trunc_normal_(self.weight, mean=0.0, std=1.0, a=-3.0, b=3.0)
 
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
-        # 直接高级索引查表
+        # 直接高级索引查表：等价于 einstein 版的
+        # einx.get_at("[v] d, ... -> ... d", self.weight, token_ids)（见那边注释的逐段解释）
         return self.weight[token_ids]
 
 

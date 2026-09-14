@@ -45,7 +45,19 @@ class Embedding(nn.Module):
         nn.init.trunc_normal_(self.weight, mean=0.0, std=1.0, a=-3.0, b=3.0)
 
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
-        # 沿词表轴 [v] 做爱因斯坦风格索引
+        # einx.get_at = 广义「按索引取子张量」(gather / 高级索引)，是 einsum 的索引版对偶。
+        #
+        # 表达式 "[v] d, ... -> ... d" 按「左操作数, 右操作数 -> 输出」读：
+        #   [v] d  —— 被索引的张量 self.weight，形状 (V, d)：
+        #            [v] 用**方括号**标记「要沿这条轴、按整数下标取值」的轴（词表轴 V）；
+        #            d   是每条索引取出的「行」的长度（embedding 维度），原样保留。
+        #   ...    —— 索引张量 token_ids；... 表示任意多个前置 batch 维，
+        #            其中每个整数都被当作 v 轴上的下标。
+        #   ... d  —— 对每个下标取 weight 的第 i 行（d 维），再按索引张量原有的 batch 维拼回。
+        #
+        # 例：token_ids (B, S) -> 输出 (B, S, d)；token_ids (B,) -> (B, d)；token_ids 标量 -> (d,)
+        # 大白话：token_ids 里每个数字 i，就取 self.weight 的第 i 行放回原位置。
+        # 精确等价于 no_einstein 版的 self.weight[token_ids]（PyTorch 高级索引）。
         return einx.get_at("[v] d, ... -> ... d", self.weight, token_ids)
 
 
