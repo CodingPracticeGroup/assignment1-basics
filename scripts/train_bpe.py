@@ -15,6 +15,8 @@ from cs336_basics.bpe_tokenizer.trainer import run_train_bpe
 
 def _peak_tree_rss_mb(pid: int, stop: threading.Event, out: list[int]) -> None:
     peak = 0
+    start = time.time()
+    last_log = start
     try:
         proc = psutil.Process(pid)
     except psutil.NoSuchProcess:
@@ -29,6 +31,13 @@ def _peak_tree_rss_mb(pid: int, stop: threading.Event, out: list[int]) -> None:
                 except psutil.NoSuchProcess:
                     pass
             peak = max(peak, total)
+            now = time.time()
+            if now - last_log >= 30.0:
+                last_log = now
+                print(
+                    f"  [heartbeat] elapsed={now - start:.0f}s tree_rss={total / 1024 ** 3:.2f} GiB",
+                    flush=True,
+                )
         except psutil.NoSuchProcess:
             pass
         time.sleep(0.2)
