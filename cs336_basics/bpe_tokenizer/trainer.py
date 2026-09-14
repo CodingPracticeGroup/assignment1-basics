@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import multiprocessing
 import os
 from collections import defaultdict
@@ -146,6 +147,110 @@ def pre_merge(
     return word_freqs
 
 
+def pre_merge_file(
+    input_path: str | os.PathLike,
+    special_tokens: list[str],
+    chunk_bytes: int = 1 << 27,
+    num_workers: int | None = None,
+) -> dict[tuple[bytes, ...], int]:
+    """
+    从文件**流式**做 pre-tokenization（pre-merge），内存有界，结果与 pre_merge 完全一致。
+
+    每次只读一个 chunk（默认 128 MiB），只提交**确定完整**的 pre-token，把可能被 chunk
+    截断的尾巴留到下一次读取再拼接，因此内存上界 ≈ chunk_bytes + 累计词型表，可处理远
+    大于内存的语料（例如 12GB 的 OpenWebText）。有无特殊 Token 都走流式：
+
+    * 有特殊 Token：把 chunk 对齐到「最后一个特殊 Token 之后」，chunk 内部的文档用多进程
+      并行预分词；
+    * 无特殊 Token：用增量 UTF-8 解码器把字节流变成文本，每次只提交「除最后一个正则匹配
+      之外」的所有匹配；最后一个匹配可能是被 chunk 截断的 pre-token，携带到下一块重新匹配
+      （正则没有 lookbehind，所以从匹配起点继续扫与整篇扫描等价）。
+    """
+    chunk_bytes = max(chunk_bytes, 1 << 20)
+
+    word_freqs: dict[tuple[bytes, ...], int] = defaultdict(int)
+    if num_workers is None:
+        num_workers = min(multiprocessing.cpu_count(), 8)
+    pool = None
+
+    def _accumulate(freqs: dict[tuple[bytes, ...], int]) -> None:
+        for key, value in freqs.items():
+            word_freqs[key] += value
+
+    def _pretokenize_pieces(pieces: list[str]) -> None:
+        nonlocal pool
+        if len(pieces) > 1 and sum(len(piece) for piece in pieces) > 500_000:
+            if pool is None:
+                pool = multiprocessing.Pool(processes=num_workers)
+            for result in pool.map(pretokenize_text, pieces):
+                _accumulate(result)
+        else:
+            for piece in pieces:
+                _accumulate(pretokenize_text(piece))
+
+    if special_tokens:
+        special_bytes = [token.encode("utf-8") for token in special_tokens]
+        split_pattern = re.compile("|".join(re.escape(token) for token in special_tokens))
+        remainder = b""
+        with open(input_path, "rb") as f:
+            while True:
+                chunk = f.read(chunk_bytes)
+                eof = chunk == b""
+                buffer = remainder + chunk
+
+                if not eof:
+                    # 对齐到「最后一个特殊 Token 之后」，保证不切断文档
+                    cut = -1
+                    for special in special_bytes:
+                        pos = buffer.rfind(special)
+                        if pos != -1:
+                            cut = max(cut, pos + len(special))
+                    if cut == -1:
+                        remainder = buffer
+                        continue
+                    process, remainder = buffer[:cut], buffer[cut:]
+                else:
+                    process, remainder = buffer, b""
+
+                if process:
+                    text = process.decode("utf-8", errors="ignore")
+                    _pretokenize_pieces([p for p in split_pattern.split(text) if p])
+
+                if eof:
+                    break
+    else:
+        # 没有特殊 Token：增量解码 + 只提交除最后一个匹配外的所有 pre-token
+        decoder = codecs.getincrementaldecoder("utf-8")("ignore")
+        remainder_text = ""
+        with open(input_path, "rb") as f:
+            while True:
+                chunk = f.read(chunk_bytes)
+                eof = chunk == b""
+                text = remainder_text + decoder.decode(chunk, final=eof)
+                if not text:
+                    if eof:
+                        break
+                    continue
+
+                matches = [match.group(0) for match in compiled_pat.finditer(text)]
+                if eof:
+                    _pretokenize_pieces(matches)
+                    break
+
+                # 最后一个匹配可能被 chunk 截断，留到下一块重新匹配
+                if matches:
+                    _pretokenize_pieces(matches[:-1])
+                    remainder_text = matches[-1]
+                else:
+                    remainder_text = text
+
+    if pool is not None:
+        pool.close()
+        pool.join()
+
+    return word_freqs
+
+
 def apply_merge(
     word_freqs: dict[tuple[bytes, ...], int],
     pair_freqs: dict[tuple[bytes, bytes], int],
@@ -254,12 +359,9 @@ def run_train_bpe(
     """
     在输入语料库上训练字节级（byte-level）的 BPE 分词器，并输出最终词表与合并顺序。
     """
-    # 1. 读取输入文本文件
-    with open(input_path, encoding="utf-8", errors="ignore") as f:
-        corpus = f.read()
-
-    # 2. 预分词（pre-tokenization / pre-merge）：特殊 Token 硬分割 + 正则预分词 + 频次汇总
-    word_freqs = pre_merge(corpus, special_tokens)
+    # 1+2. 流式预分词（pre-tokenization / pre-merge）：
+    #   分块读取 + 在特殊 Token 处硬分割 + 正则预分词 + 频次汇总（内存有界）
+    word_freqs = pre_merge_file(input_path, special_tokens)
 
     # 3. 执行 BPE 合并循环
     merges: list[tuple[bytes, bytes]] = []
