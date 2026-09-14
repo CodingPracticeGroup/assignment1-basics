@@ -5,6 +5,18 @@ from typing import BinaryIO, IO
 import torch
 
 
+def _strip_compiled_prefix(state_dict: dict) -> dict:
+    """去掉 torch.compile 包装（OptimizedModule）产生的 `_orig_mod.` 前缀。
+
+    `model = torch.compile(model)` 之后 `model.state_dict()` 的键会变成
+    `_orig_mod.xxx`；这里统一剥掉，保证 compile / 非 compile 的 checkpoint 互通。
+    """
+    prefix = "_orig_mod."
+    if any(str(key).startswith(prefix) for key in state_dict):
+        return {str(key)[len(prefix):] if str(key).startswith(prefix) else key: value for key, value in state_dict.items()}
+    return state_dict
+
+
 def save_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -18,7 +30,7 @@ def save_checkpoint(
     是 `tests/adapters.py` 里的 `run_save_checkpoint`，它只是调用本函数。
     """
     checkpoint = {
-        "model_state_dict": model.state_dict(),
+        "model_state_dict": _strip_compiled_prefix(model.state_dict()),
         "optimizer_state_dict": optimizer.state_dict(),
         "iteration": iteration,
     }
@@ -39,7 +51,7 @@ def load_checkpoint(
     # 采用 map_location="cpu" 是业界最安全的范式，能防止跨平台（mps/cuda/cpu）读取时的设备绑定卡死问题
     checkpoint = torch.load(src, map_location="cpu")
     
-    model.load_state_dict(checkpoint["model_state_dict"])
+    model.load_state_dict(_strip_compiled_prefix(checkpoint["model_state_dict"]))
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     
     return checkpoint["iteration"]

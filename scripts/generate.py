@@ -82,6 +82,8 @@ def main() -> None:
     ).to(device)
     checkpoint = torch.load(args.checkpoint, map_location="cpu")
     state = checkpoint.get("model_state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+    # torch.compile 保存的 checkpoint 键会带 _orig_mod. 前缀，这里剥掉
+    state = {k[len("_orig_mod."):] if k.startswith("_orig_mod.") else k: v for k, v in state.items()}
     model.load_state_dict(state)
     model.eval()
 
