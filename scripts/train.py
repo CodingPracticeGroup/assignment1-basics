@@ -72,6 +72,7 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--checkpoint", default=None, help="checkpoint 输出路径")
     ap.add_argument("--resume", default=None, help="从该 checkpoint 恢复")
     ap.add_argument("--tensorboard", default=None, help="TensorBoard logdir（本地可视化、无需账号）")
+    ap.add_argument("--sdpa", action="store_true", help="用 PyTorch 融合 SDPA 替代手写注意力（更快、数学等价；训练不再走我们自己的 attention 实现）")
     # 运行时
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--dtype", default="float32", choices=["float32", "bfloat16", "float16"])
@@ -119,6 +120,23 @@ def main() -> None:
     np.random.seed(args.seed)
     device = args.device
     amp_device, amp_dtype = _amp_settings(device, args.dtype)
+
+    if args.sdpa:
+        # 用 torch 的融合 SDPA（flash / mem-efficient）替换当前 notation 的
+        # 手写 scaled_dot_product_attention；因果 mask 交给 is_causal。
+        import importlib
+
+        import torch.nn.functional as F
+
+        from cs336_basics import notation
+
+        attn_mod = importlib.import_module(f"cs336_basics.notation.{notation.ACTIVE}.attention")
+
+        def _fused_sdpa(Q, K, V, mask=None):
+            return F.scaled_dot_product_attention(Q, K, V, is_causal=(mask is not None))
+
+        attn_mod.scaled_dot_product_attention = _fused_sdpa
+        print("using fused torch SDPA for attention", flush=True)
 
     train_data = _open_dataset(args.train_bin)
     val_data = _open_dataset(args.val_bin) if args.val_bin else None
