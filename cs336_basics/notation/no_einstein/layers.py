@@ -56,12 +56,12 @@ class RMSNorm(nn.Module):
         in_dtype = x.dtype
         x_f32 = x.to(torch.float32)
 
-        # 沿最后一维手写均值、开方与除法
+        # 沿最后一维手写均值、开方与除法；gain 也在 float32 里乘，最后统一 cast 回原 dtype
         mean_square = torch.mean(x_f32 ** 2, dim=-1, keepdim=True)
         rms = torch.sqrt(mean_square + self.eps)
-        normalized = (x_f32 / rms).to(in_dtype)
+        result = (x_f32 / rms) * self.weight
 
-        return self.weight * normalized
+        return result.to(in_dtype)
 
 
 def silu(x: torch.Tensor) -> torch.Tensor:

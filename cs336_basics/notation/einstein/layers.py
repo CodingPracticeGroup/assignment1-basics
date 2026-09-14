@@ -72,12 +72,12 @@ class RMSNorm(nn.Module):
         in_dtype = x.dtype
         x_f32 = x.to(torch.float32)
 
-        # 沿特征轴 [d] 归约（([d]) 表示保留该轴），再用 einx.multiply 广播 gain
+        # 全程 float32：先沿特征轴 [d] 归约（([d]) 表示保留该轴），再乘 gain，最后 cast 回原 dtype
         mean_square = einx.mean("... ([d])", x_f32 ** 2)
         rms = torch.sqrt(mean_square + self.eps)
-        normalized = (x_f32 / rms).to(in_dtype)
+        result = einx.multiply("... d, d -> ... d", x_f32 / rms, self.weight)
 
-        return einx.multiply("... d, d -> ... d", normalized, self.weight)
+        return result.to(in_dtype)
 
 
 def silu(x: torch.Tensor) -> torch.Tensor:
