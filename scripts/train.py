@@ -24,6 +24,7 @@ from cs336_basics.model.transformer import BasicsTransformerLM
 from cs336_basics.training.checkpointer import run_load_checkpoint, run_save_checkpoint
 from cs336_basics.training.clipping import run_gradient_clipping
 from cs336_basics.training.dataloader import run_get_batch
+from cs336_basics.training.metrics import perplexity_from_loss
 from cs336_basics.training.optimizers import AdamW, cross_entropy
 from cs336_basics.training.schedulers import run_get_lr_cosine_schedule
 
@@ -161,9 +162,10 @@ def main() -> None:
 
         if val_data is not None and args.val_every > 0 and (step + 1) % args.val_every == 0:
             val_loss = evaluate(model, val_data, args, device, amp_device, amp_dtype)
-            print(f"step {step:6d} | val loss {val_loss:.4f}", flush=True)
+            val_ppl = perplexity_from_loss(val_loss)
+            print(f"step {step:6d} | val loss {val_loss:.4f} | val ppl {val_ppl:.2f}", flush=True)
             if wandb_run:
-                wandb_run.log({"val/loss": val_loss, "step": step}, step=step)
+                wandb_run.log({"val/loss": val_loss, "val/perplexity": val_ppl, "step": step}, step=step)
 
         if args.checkpoint and args.save_every > 0 and (step + 1) % args.save_every == 0:
             os.makedirs(os.path.dirname(args.checkpoint) or ".", exist_ok=True)
