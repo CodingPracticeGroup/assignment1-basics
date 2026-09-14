@@ -109,13 +109,13 @@ _Deliverable:_ A one-to-two sentence response.
 
 **实测**（`run_train_bpe("data/TinyStoriesV2-GPT4-train.txt", vocab_size=10000, special_tokens=["<|endoftext|>"])`，本机 28 核 CPU）：
 
-- **时间**：约 **155 s（~2.6 分钟）**，在 handout 的 30 分钟预算内（多进程预分词，8 worker）。
-- **内存**：峰值 RSS 约 **3.3 GiB**。早期“整篇读入”的版本峰值 ~37.7 GiB；改成**流式分块预分词**（按 `<|endoftext|>` 对齐）后降到 3.3 GiB。
+- **时间**：约 **63 s（~1 分钟）**，远低于 handout 的 30 分钟预算。预分词用 8 进程 + pre-token 缓存（见 (b)），合并循环用倒排索引 + 最大堆。
+- **内存**：峰值 RSS 约 **7.9 GiB**（`psutil` 对主进程 + 子进程 RSS 求和，含 8 个 worker），远低于 30 GiB。早期“整篇读入”的版本峰值 ~37.7 GiB；改成**流式分块预分词**（按 `<|endoftext|>` 对齐，尾巴实测 ≤ ~5.5 KiB）后降到 GiB 量级。
 - **最长 token**：**15 字符**，例如 `b' accomplishment'`、`b' disappointment'`、`b' responsibility'`（都带前导空格）。
 - **序列化**：`artifacts/tinystories_10k_stream/{vocab,merges}.pkl`（vocab=10000，merges=9743）；训练脚本同时导出 GPT-2 文本格式 `vocab.json` / `merges.txt`，可用 `Tokenizer.from_files` 重新加载。
 - **是否合理**：合理。TinyStories 是简单、高度重复的英文儿童故事，10K 词表会把高频词整体合并，因此最长 token 落在 13–15 字符的常见长词（accomplishment / disappointment / responsibility …）上。
 
-**(b)** 在 TinyStories 上，**预分词（pre-tokenization）是主要瓶颈**：200 MB 子集实测 `pre_merge ≈ 12.3 s` vs `合并循环 ≈ 10.3 s`，放大到 2.1 GB 时预分词占比更大（handout 的 hint 也指出如此），开销来自“正则扫描全语料 + 构造字节元组 + 多进程 pickle/IPC”。合并循环内部的第一热点原本是每轮 `max(pair_freqs, key=pair_priority)` 扫描全部相邻对（`cProfile` 显示 `max` 约占 merge loop 的 57%）；已改用**最大堆 + lazy invalidation** 增量维护候选 pair，把每轮选择从 O(pair 数) 降到摊还 O(log heap)（实测 TS-200MB 9.8s→0.5s、OWT-1GB 119.3s→38.7s，merges 逐字节一致），此后大语料上 `apply_merge`（倒排索引只遍历受影响词型并重写它们）成为合并阶段的主要开销。
+**(b)** 在 TinyStories 上，**预分词仍是主要瓶颈**，但已被优化到很低。`pretokenize_text` 对高度重复的 pre-token 做了 `str -> 字节元组` 缓存（30 MB 实测 **8.28 → 18.64 MB/s，2.25x**，结果逐字节一致）；预分词多进程改用 `imap_unordered` 边完成边累加（比 `pool.map` 更快、峰值更低）。合并循环已用**倒排索引 + 最大堆**：`cProfile`（2000 merges）显示 `apply_merge` 占 ~**75%**，其中主要是 `pair_to_words` 的集合 `add/discard`；堆操作仅 ~16%，已无大的算法空间。`encode` 侧对 `pre-token -> ids` 做了缓存（**1.69 → 14.32 MB/s，8.5x**）。
 
 ---
 
@@ -210,11 +210,11 @@ _Deliverable:_ A one-to-two sentence response.
 
 **Answer:**
 
-**(a)** *压缩比（bytes/token）。***TODO（实测）**：各采样 10 篇文档，用对应 tokenizer 编码，报告 `len(text.encode("utf-8")) / len(tokenizer.encode(text))`。预期 TinyStories-10K 约 3.5–4.5，OpenWebText-32K 略高，因为更大、更多样的词表能覆盖更多子词。
+**(a)** *压缩比（bytes/token）。* 各采样 10 篇文档、用对应 tokenizer 编码，`len(text.encode("utf-8")) / len(tokenizer.encode(text))`：TinyStories 样本用 TS-10K 得 **≈ 4.11 bytes/token**；OpenWebText 样本用 OWT-32K 待 32K 训练完成后补（预期略高，因为更大、更多样的词表能覆盖更多子词）。
 
-**(b)** *用 TinyStories tokenizer 编码 OWT。***TODO（实测）**：TinyStories tokenizer 没见过 OWT 的大部分词汇，会退回单字节与短合并，于是压缩比**下降**（每字节需要更多 token），序列显著变长。这就是概念笔记里的 token blowup；若用它做预训练，会通过注意力的二次复杂度放大开销。
+**(b)** *用 TinyStories tokenizer 编码 OWT。* 同一批 10 篇 OWT 文档，用 **TS-10K** 编码得 **≈ 3.19 bytes/token**，比它在 TinyStories 上的 4.11 明显下降（约 −22%）。原因：TS-10K 没见过 OWT 的大部分词汇，只能退回单字节与短合并，于是压缩比下降（每字节需要更多 token），序列显著变长——即 token blowup；若用它做预训练，会通过注意力的二次复杂度放大开销。
 
-**(c)** *吞吐。***TODO（实测）**：对一大段文本计时 `encode`，报告 bytes/second，再用 825GB 除以吞吐估计 Pile 耗时。用当前哈希优先级合并循环，预期 CPU 上约 10^7 bytes/s，即 Pile 量级需要数十小时。
+**(c)** *吞吐。* 对 100–200 MB 文本计时单线程 `Tokenizer.encode`：TS-10K 在 TinyStories 上约 **14.1 MB/s**（200 MB 实测；对 pre-token 做缓存后，未缓存时约 1.7 MB/s），在 OWT 文本上约 **10.7 MB/s**（OWT 的 pre-token 重复更少，缓存命中率较低）。注意首次出现的 pre-token 仍需完整合并，缓存只对重复词生效；语料越长、重复越多，吞吐越接近上限。按 10.7–14.1 MB/s 估计，**825 GB 的 Pile 约需 ~16–21 小时**（单线程；未缓存时约 142 小时）。
 
 **(d)** *为什么用 uint16？* 这里词表最大 32,000（即使 GPT-2 的 50,257 也放得下），任何 token id 都小于 65536，可用无符号 16 位精确存储。相比 `int32`/`int64`，它把分词后语料的内存与 I/O 减半，同时仍覆盖整个词表。
 
