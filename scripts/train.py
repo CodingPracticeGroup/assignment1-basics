@@ -21,7 +21,7 @@ import numpy as np
 import torch
 
 from cs336_basics.model.transformer import BasicsTransformerLM
-from cs336_basics.training.checkpointer import run_load_checkpoint, run_save_checkpoint
+from cs336_basics.training.checkpointer import load_checkpoint, save_checkpoint
 from cs336_basics.training.clipping import run_gradient_clipping
 from cs336_basics.training.dataloader import run_get_batch
 from cs336_basics.training.metrics import perplexity_from_loss
@@ -122,7 +122,7 @@ def main() -> None:
 
     start_step = 0
     if args.resume:
-        start_step = run_load_checkpoint(args.resume, model, optimizer)
+        start_step = load_checkpoint(args.resume, model, optimizer)
         print(f"resumed from {args.resume} at step {start_step}")
 
     wandb_run = None
@@ -169,11 +169,11 @@ def main() -> None:
 
         if args.checkpoint and args.save_every > 0 and (step + 1) % args.save_every == 0:
             os.makedirs(os.path.dirname(args.checkpoint) or ".", exist_ok=True)
-            run_save_checkpoint(model, optimizer, step + 1, args.checkpoint)
+            save_checkpoint(model, optimizer, step + 1, args.checkpoint)
 
     if args.checkpoint:
         os.makedirs(os.path.dirname(args.checkpoint) or ".", exist_ok=True)
-        run_save_checkpoint(model, optimizer, args.max_steps, args.checkpoint)
+        save_checkpoint(model, optimizer, args.max_steps, args.checkpoint)
         print(f"final checkpoint -> {args.checkpoint}")
     if wandb_run:
         wandb_run.finish()

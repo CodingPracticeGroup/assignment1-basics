@@ -191,16 +191,16 @@ def run_transformer_lm(
     state_dict["ln_final.weight"] = weights["ln_final.weight"]
     state_dict["lm_head.weight"] = weights["lm_head.weight"]
     
-    for l in range(num_layers):
-        state_dict[f"layers.{l}.attn.q_proj.weight"] = weights[f"layers.{l}.attn.q_proj.weight"]
-        state_dict[f"layers.{l}.attn.k_proj.weight"] = weights[f"layers.{l}.attn.k_proj.weight"]
-        state_dict[f"layers.{l}.attn.v_proj.weight"] = weights[f"layers.{l}.attn.v_proj.weight"]
-        state_dict[f"layers.{l}.attn.output_proj.weight"] = weights[f"layers.{l}.attn.output_proj.weight"]
-        state_dict[f"layers.{l}.ln1.weight"] = weights[f"layers.{l}.ln1.weight"]
-        state_dict[f"layers.{l}.ffn.w1.weight"] = weights[f"layers.{l}.ffn.w1.weight"]
-        state_dict[f"layers.{l}.ffn.w2.weight"] = weights[f"layers.{l}.ffn.w2.weight"]
-        state_dict[f"layers.{l}.ffn.w3.weight"] = weights[f"layers.{l}.ffn.w3.weight"]
-        state_dict[f"layers.{l}.ln2.weight"] = weights[f"layers.{l}.ln2.weight"]
+    for i in range(num_layers):
+        state_dict[f"layers.{i}.attn.q_proj.weight"] = weights[f"layers.{i}.attn.q_proj.weight"]
+        state_dict[f"layers.{i}.attn.k_proj.weight"] = weights[f"layers.{i}.attn.k_proj.weight"]
+        state_dict[f"layers.{i}.attn.v_proj.weight"] = weights[f"layers.{i}.attn.v_proj.weight"]
+        state_dict[f"layers.{i}.attn.output_proj.weight"] = weights[f"layers.{i}.attn.output_proj.weight"]
+        state_dict[f"layers.{i}.ln1.weight"] = weights[f"layers.{i}.ln1.weight"]
+        state_dict[f"layers.{i}.ffn.w1.weight"] = weights[f"layers.{i}.ffn.w1.weight"]
+        state_dict[f"layers.{i}.ffn.w2.weight"] = weights[f"layers.{i}.ffn.w2.weight"]
+        state_dict[f"layers.{i}.ffn.w3.weight"] = weights[f"layers.{i}.ffn.w3.weight"]
+        state_dict[f"layers.{i}.ln2.weight"] = weights[f"layers.{i}.ln2.weight"]
         
     layer.load_state_dict(state_dict)
     return layer(in_indices)
@@ -296,7 +296,7 @@ def run_save_checkpoint(
     """
     Save state checkpoint.
     """
-    from cs336_basics.training.checkpointer import run_save_checkpoint as save_cp
+    from cs336_basics.training.checkpointer import save_checkpoint as save_cp
     return save_cp(model, optimizer, iteration, out)
 
 
@@ -308,7 +308,7 @@ def run_load_checkpoint(
     """
     Load state checkpoint.
     """
-    from cs336_basics.training.checkpointer import run_load_checkpoint as load_cp
+    from cs336_basics.training.checkpointer import load_checkpoint as load_cp
     return load_cp(src, model, optimizer)
 
 

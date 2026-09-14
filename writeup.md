@@ -749,7 +749,7 @@ Implement the `adapters.run_save_checkpoint` and `adapters.run_load_checkpoint` 
 
 **Answer:**
 
-实现为 `cs336_basics/training/checkpointer.py` 中的 `run_save_checkpoint(model, optimizer, iteration, out)` 与 `run_load_checkpoint(src, model, optimizer) -> int`，通过 `adapters.run_save_checkpoint` / `run_load_checkpoint` 接入测试。
+实现为 `cs336_basics/training/checkpointer.py` 中的 `save_checkpoint(model, optimizer, iteration, out)` 与 `load_checkpoint(src, model, optimizer) -> int`（函数名按 handout 规定）；测试用的 `adapters.run_save_checkpoint` / `adapters.run_load_checkpoint` 只是调用这两个函数的 glue。
 
 - 保存：`torch.save({"model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(), "iteration": iteration}, out)`；`out` 可以是路径或 file-like 对象。
 - 加载：`torch.load(src, map_location="cpu")`，再 `model.load_state_dict(checkpoint["model_state_dict"])`、`optimizer.load_state_dict(checkpoint["optimizer_state_dict"])`，返回 `checkpoint["iteration"]`。先加载到 CPU 再交给模型/优化器，是在不同设备上恢复 checkpoint 的安全做法。
@@ -773,7 +773,7 @@ Write a script that runs a training loop to train your model on user-provided in
 - 通过 `argparse`（或 YAML 配置）完全可配：模型（`vocab_size, context_length, d_model, num_layers, num_heads, d_ff, rope_theta`）、优化器（`lr, betas, eps, weight_decay`）、schedule（`warmup_iters, cosine_cycle_iters, min_lr`）、循环（`batch_size, max_steps, grad_clip, device, dtype, checkpoint_path, val_every`）。
 - 省内存的数据加载：分词后的语料以 `uint16` NumPy 数组保存，用 `np.memmap` 打开，minibatch 由 `run_get_batch` 采样，不在内存里放下整个语料。
 - 循环：每步采样 batch -> forward -> cross-entropy -> backward -> 梯度裁剪 -> AdamW step -> 学习率 schedule step；每 `val_every` 步在验证集上评估。
-- Checkpoint：定期调用 `run_save_checkpoint`（model + optimizer + iteration），并支持用 `run_load_checkpoint` 恢复。
+- Checkpoint：定期调用 `save_checkpoint`（model + optimizer + iteration），并支持用 `load_checkpoint` 恢复。
 - 日志：打印并在可选时记录到 Weights and Biases 训练/验证 loss，x 轴可切换为梯度步或墙钟时间（`wandb.define_metric(step_metric=...)`）。
 
 运行：`uv run python train.py --config configs/tinystories.yaml`（OpenWebText 同理）。实验日志与曲线由该脚本产出。
