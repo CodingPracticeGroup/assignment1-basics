@@ -2,7 +2,7 @@
 
 Import-time dispatcher over `cs336_basics.notation.{einstein,no_einstein}.attention`,
 selected by the `CS336_NOTATION` environment variable. See
-`cs336_basics.notation` and `NOTATION.md`.
+`cs336_basics.notation` and the concept-repo `Stanford-CS336/Spring2026/assignments/assignment1/NOTATION.md`.
 """
 
 from __future__ import annotations

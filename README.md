@@ -33,7 +33,7 @@ functions in [./tests/adapters.py](./tests/adapters.py).
 ### Two implementation styles: plain PyTorch vs. Einstein notation
 
 This repo ships **two complete, numerically equivalent implementations** of the
-Assignment 1 model code (see [./NOTATION.md](./NOTATION.md)):
+Assignment 1 model code (see the concept-repo `Stanford-CS336/Spring2026/assignments/assignment1/NOTATION.md`):
 
 * `no_einstein` — plain PyTorch: `@` / `matmul`, `reshape` / `transpose`, slicing.
 * `einstein` — Einstein notation: the unified `einx` API only (`einx.dot`, `einx.id`, `einx.softmax`, ...).

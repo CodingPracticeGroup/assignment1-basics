@@ -3,8 +3,8 @@
 This is a thin, import-time dispatcher: the actual code lives in
 `cs336_basics.notation.no_einstein.layers` (plain PyTorch) or
 `cs336_basics.notation.einstein.layers` (Einstein notation), selected by the
-`CS336_NOTATION` environment variable. See `cs336_basics.notation` and
-`NOTATION.md`.
+`CS336_NOTATION` environment variable. See `cs336_basics.notation` and the
+concept-repo `Stanford-CS336/Spring2026/assignments/assignment1/NOTATION.md`.
 """
 
 from __future__ import annotations

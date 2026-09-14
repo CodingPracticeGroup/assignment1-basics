@@ -29,7 +29,7 @@ Run it against the Einstein-notation implementation::
 
     CS336_NOTATION=einstein uv run pytest
 
-See `NOTATION.md` in the assignment root for the full side-by-side mapping.
+See the concept-repo `Stanford-CS336/Spring2026/assignments/assignment1/NOTATION.md` for the full side-by-side mapping.
 """
 
 from __future__ import annotations
