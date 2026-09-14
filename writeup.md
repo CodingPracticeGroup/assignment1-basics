@@ -130,9 +130,18 @@ _Deliverable:_ A one-to-two sentence response.
 
 **Answer:**
 
-**(a)** 用 `run_train_bpe("data/owt_train.txt", vocab_size=32000, special_tokens=["<|endoftext|>"])` 训练并序列化结果（这是 12 小时 / 100GB 的题目）。*最长 token：***TODO（实测）**；对 OpenWebText 预期 token 明显比 TinyStories 长，因为语料包含 URL、代码、HTML 残留、长数字和罕见复合词，合并仍能把它们拼成长字节串，所以出现长 token 既合理又更异质。
+**(a)** 用 `run_train_bpe("data/owt_train.txt", vocab_size=32000, special_tokens=["<|endoftext|>"])` 训练并序列化结果（`artifacts/owt_32k_stream/{vocab,merges}.pkl` + GPT-2 文本格式），vocab=32000 / merges=31743。
 
-**(b)** *“两个 tokenizer 的异同？”***TODO（两个都训练后实测）**，但定性上：32K 的 OpenWebText tokenizer 词表更大、拟合的数据分布更多样，因此对英文网页文本压缩更好（bytes/token 更高）；而 10K 的 TinyStories tokenizer 偏向简单的叙事英语，会把很多合并用在儿童故事词汇上。把 TinyStories tokenizer 用到 OpenWebText（第 7(b) 题）能把这个领域不匹配具体地体现为压缩比下降。
+- **时间/内存**：约 **1201 s（~20 分钟）**，峰值 RSS **12.7 GiB**——远低于 12 小时 / 100 GB 预算。其中预分词约 8 分钟（8 进程）、合并约 12 分钟（单线程，倒排索引 + 最大堆）。
+- **最长 token**：**64 字节**，有两个：一个是重复 16 次的 **mojibake** 序列 `b'\xc3\x83\xc2...'`（网页文本里常见的双重 UTF-8 编码残留），另一个是 64 个连字符 `b'-----…'`。其后是 48 字节的 em-dash 串、6 个 32 字节的重复符号（`-`/`_`/`=`/`.`/`*`/mojibake）。
+- **是否合理**：合理。OpenWebText 是网页文本，充斥分隔线、markdown/HTML 残留、长串重复标点和编码伪影；同一符号长程重复时 BPE 会一路合并成很长的 token。注意这类长 token 极少：词表里长度 ≥16 字节的只有 **47 个**（≥24 的仅 10 个），绝大多数仍是正常子词。
+
+**(b)** 对比（同一批 10 篇文档实测，数字见第 7(a) 题）：
+
+- **词表/结构**：OWT-32K 是 **3.2 倍**大的词表（32000 vs 10000），含网页特有 token——长串重复标点、mojibake、URL/HTML 片段；TinyStories-10K 偏向简单叙事英语，最长 token 是 15 字符的常见长词（`accomplishment` / `responsibility` …）。
+- **本领域压缩**：OWT-32K 在 OWT 上 **4.69 bytes/token**，TS-10K 在 TinyStories 上 **4.11**——更大的 OWT 词表即便面对更混杂的网页文本也更高效。
+- **跨领域**：TS-10K 用在 OWT 上降到 **3.19**（token blowup，见 7(b)）；反过来 OWT-32K 用在 TinyStories 上是 **4.01**，几乎不退化，说明 32K 网页词表对简单英文也有较好覆盖。
+- **代价**：词表大 3.2 倍，嵌入层 / 输出层参数与显存相应增加。
 
 ---
 
@@ -210,11 +219,11 @@ _Deliverable:_ A one-to-two sentence response.
 
 **Answer:**
 
-**(a)** *压缩比（bytes/token）。* 各采样 10 篇文档、用对应 tokenizer 编码，`len(text.encode("utf-8")) / len(tokenizer.encode(text))`：TinyStories 样本用 TS-10K 得 **≈ 4.11 bytes/token**；OpenWebText 样本用 OWT-32K 待 32K 训练完成后补（预期略高，因为更大、更多样的词表能覆盖更多子词）。
+**(a)** *压缩比（bytes/token）。* 各采样 10 篇文档、用对应 tokenizer 编码，`len(text.encode("utf-8")) / len(tokenizer.encode(text))`：TinyStories 样本用 TS-10K 得 **≈ 4.11**；OpenWebText 样本用 OWT-32K 得 **≈ 4.69**。交叉对比：TS-10K 在 OWT 上 3.19、OWT-32K 在 TinyStories 上 4.01。可见各自领域内，“更大词表 + 更贴合分布”都带来更高压缩比。
 
 **(b)** *用 TinyStories tokenizer 编码 OWT。* 同一批 10 篇 OWT 文档，用 **TS-10K** 编码得 **≈ 3.19 bytes/token**，比它在 TinyStories 上的 4.11 明显下降（约 −22%）。原因：TS-10K 没见过 OWT 的大部分词汇，只能退回单字节与短合并，于是压缩比下降（每字节需要更多 token），序列显著变长——即 token blowup；若用它做预训练，会通过注意力的二次复杂度放大开销。
 
-**(c)** *吞吐。* 对 100–200 MB 文本计时单线程 `Tokenizer.encode`：TS-10K 在 TinyStories 上约 **14.1 MB/s**（200 MB 实测；对 pre-token 做缓存后，未缓存时约 1.7 MB/s），在 OWT 文本上约 **10.7 MB/s**（OWT 的 pre-token 重复更少，缓存命中率较低）。注意首次出现的 pre-token 仍需完整合并，缓存只对重复词生效；语料越长、重复越多，吞吐越接近上限。按 10.7–14.1 MB/s 估计，**825 GB 的 Pile 约需 ~16–21 小时**（单线程；未缓存时约 142 小时）。
+**(c)** *吞吐。* 对 100–200 MB 文本计时单线程 `Tokenizer.encode`：TS-10K 在 TinyStories 上约 **14.1 MB/s**（200 MB 实测；对 pre-token 做缓存后，未缓存时约 1.7 MB/s）；TS-10K 与 OWT-32K 在 OWT 文本上均约 **10.7 MB/s**（OWT 的 pre-token 重复更少，缓存命中率较低）。注意首次出现的 pre-token 仍需完整合并，缓存只对重复词生效；语料越长、重复越多，吞吐越接近上限。按 10.7–14.1 MB/s 估计，**825 GB 的 Pile 约需 ~16–21 小时**（单线程；未缓存时约 142 小时）。
 
 **(d)** *为什么用 uint16？* 这里词表最大 32,000（即使 GPT-2 的 50,257 也放得下），任何 token id 都小于 65536，可用无符号 16 位精确存储。相比 `int32`/`int64`，它把分词后语料的内存与 I/O 减半，同时仍覆盖整个词表。
 
