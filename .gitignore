@@ -161,3 +161,8 @@ cython_debug/
 
 .ruff_cache/
 *.zip
+
+# --- CS336 Assignment 1: local datasets and training artifacts ---
+data/
+wandb/
+artifacts/
