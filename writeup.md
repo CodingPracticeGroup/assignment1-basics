@@ -817,7 +817,7 @@ _Deliverable:_ Logging infrastructure code for your experiments and an experimen
 
 | id | 对应题目 | 相对基线的改动 | lr | batch | steps | val loss | 备注 |
 | :-- | :-- | :-- | --: | --: | --: | --: | :-- |
-| base | 基线 | TinyStories，handout §7.2.1：4 层/16 头/d_model 512/d_ff 1344 | 待定 | 64 | 20000 | 待定 | 非嵌入 ~12.5M |
+| base | 基线 | TinyStories，handout §7.2.1：4 层/16 头/d_model 512/d_ff 1344 | 1e-3 | 64 | 20000 | **1.3487**（ppl 3.85） | no_einstein+SDPA+compile，RTX 4060 Ti ~38 min |
 | lr-1 | 30 | lr sweep | {3e-4,1e-3,3e-3,1e-2} | 64 | 相同 | 待定 | 选最优 |
 | bs-1 | 31 | batch size sweep | 重新调 | {1,8,32,64,128,256} | 相同 | 待定 | 重调 lr |
 | no-rm | 33 | 去掉 RMSNorm | 最优/更低 | 64 | 相同 | 待定 | 稳定性研究 |
