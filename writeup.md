@@ -871,9 +871,16 @@ _Deliverable:_ Text dump of at least 256 tokens of text (or until the first `<|e
 
 **Answer:**
 
-**设置。** 用最优 TinyStories checkpoint 与 top-p/temperature 解码器（第 28 题），输入一个故事开头，采样至少 256 个 token（或直到第一个 `<|endoftext|>`）。
+**设置。** 用最终 TinyStories checkpoint（`artifacts/runs/tinystories_compile/ckpt.pt`，4 层/16 头/d_model 512，val loss **1.3487** / ppl **3.85**）× top-p/temperature 解码器（第 28 题）：`prompt="Once upon a time"`、`temperature=0.8`、`top-p=0.9`、最多 256 个 token。注意 checkpoint 是 `no_einstein` 训练的，这里用默认 `einstein` 加载生成（权重通用，见 `train-notes.md` §10）。
 
-**生成文本：** TODO——待模型训练完成后粘贴（前提是先实现 `train.py`/`generate.py` 并训练出 checkpoint）。
+**生成文本**（`temperature=0.8, top-p=0.9`；模型在结尾生成 `<|endoftext|>` 后停止）：
+
+> Once upon a time, there was a big, bossy cat named Tom. Tom liked to play in the sun all day. He had a lot of fun with his friends.
+> One day, Tom saw a big dog. The dog was not nice. It wanted to fight. Tom was scared. He hid under a tree. He could not find the dog.
+> Tom had an idea. He ran to the tree and hid under it. The dog went away. Tom was happy. He could play in the sun again. The dog did not bother Tom anymore. They became friends.
+> `<|endoftext|>`
+
+**流畅度讨论。** 输出**高度流畅**：语法正确、有完整的叙事弧（主角→冲突→解决→和解），符合 TinyStories 风格。影响好坏的至少两个因素：（1）**采样参数**：`temperature=0.8` + `top-p=0.9` 在多样性与连贯性间取得平衡，更低温度更流畅但易重复，更高温度更易跑题 / 语法崩坏；（2）**模型容量与训练 token 预算**：仅约 22.7M 参数（非嵌入 ~12.5M）、4 层、327.68M tokens，容量有限，续写更长会漂移或复读；更多步数 / 更大模型 / 更多样语料能提升。（3）**tokenizer 与 context length** 决定模型能条件化的信息；本模型 context 256，对 TinyStories 的短故事足够。
 
 **流畅度讨论（至少两个因素）。**（1）**采样参数**：低 temperature / 低 top-p 文本更流畅但容易重复，高 temperature / 高 top-p 更多样但连贯性下降，可能出现局部无意义或跑题的续写。（2）**训练算力与数据**：只有约 17M 参数的小模型和有限步数时，有效容量与世界知识都有限，续写越长越容易漂移；更多步数、更大模型或更大更多样的语料能提升流畅度。（3）**tokenizer 与上下文长度**也限制了模型能条件化的信息。
 
