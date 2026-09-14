@@ -146,35 +146,6 @@ def pre_merge(
     return word_freqs
 
 
-def _read_span_through_special(
-    f,
-    min_bytes: int,
-    special_bytes: list[bytes],
-) -> bytes:
-    """从 f 当前位置读至少 min_bytes，并向后读到一个特殊 Token 之后为止。
-
-    若缓冲区里找到了特殊 Token，就把文件指针退回到该 Token 之后，使下一段从
-    文档边界开始（本段与下一段拼起来正好覆盖整个文件，且不切断任何文档）。
-    """
-    buf = f.read(min_bytes)
-    if not buf:
-        return b""
-    while True:
-        cut = -1
-        for token in special_bytes:
-            pos = buf.rfind(token)
-            if pos != -1:
-                cut = max(cut, pos + len(token))
-        if cut != -1:
-            if cut < len(buf):
-                f.seek(cut - len(buf), os.SEEK_CUR)
-            return buf[:cut]
-        more = f.read(min_bytes)
-        if not more:
-            return buf
-        buf += more
-
-
 def pre_merge_file(
     input_path: str | os.PathLike,
     special_tokens: list[str],
@@ -184,12 +155,14 @@ def pre_merge_file(
     """
     从文件**流式**做 pre-tokenization（pre-merge），内存有界，结果与 pre_merge 完全一致。
 
-    依赖数据里有特殊 Token（本作业的语料一定含 `<|endoftext|>`）：每次读 chunk_bytes，
-    再向后读到「刚好越过一个特殊 Token」为止，把这一整段解码后做预分词。切点紧跟 ASCII
-    特殊 Token 之后，**天然是合法的 UTF-8 边界**，所以不需要处理「字符被切开」的问题。
+    每次读一个 chunk，拼上上一轮留下的尾巴，然后从缓冲区里找到**最后一个特殊 Token**，
+    把它之前（含）的部分当作本次的完整文本去预分词；它之后的尾巴留到下一轮继续拼接。
+    切点紧跟 ASCII 特殊 Token，天然是合法 UTF-8 边界，所以不需要处理「字符被切开」的问题。
 
-    实测两个相邻特殊 Token 之间最长为 ~164 KiB（见 DATA.md 7.4），所以每次多读的量很小，
-    内存上界 ≈ chunk_bytes + 累计词型表。没有特殊 Token 时没有安全切点，退回整篇 pre_merge。
+    实测相邻特殊 Token 之间最长为 ~164 KiB（见 DATA.md 7.4），所以尾巴很小。这种「带尾巴」
+    的写法不需要 seek，也能用在不可回退的流（pipe / stdin）上。
+
+    没有特殊 Token 时没有安全切点，退回整篇 pre_merge（本作业的语料一定含 <|endoftext|>）。
     """
     if not special_tokens:
         with open(input_path, encoding="utf-8", errors="ignore") as f:
@@ -219,13 +192,33 @@ def pre_merge_file(
             for piece in pieces:
                 _accumulate(pretokenize_text(piece))
 
+    remainder = b""
     with open(input_path, "rb") as f:
         while True:
-            segment = _read_span_through_special(f, chunk_bytes, special_bytes)
-            if not segment:
+            chunk = f.read(chunk_bytes)
+            eof = chunk == b""
+            buffer = remainder + chunk
+
+            if not eof:
+                # 切在缓冲区里最后一个特殊 Token 之后，尾巴留到下一轮
+                cut = -1
+                for token in special_bytes:
+                    pos = buffer.rfind(token)
+                    if pos != -1:
+                        cut = max(cut, pos + len(token))
+                if cut == -1:
+                    remainder = buffer
+                    continue
+                process, remainder = buffer[:cut], buffer[cut:]
+            else:
+                process, remainder = buffer, b""
+
+            if process:
+                text = process.decode("utf-8", errors="ignore")
+                _pretokenize_pieces([p for p in split_pattern.split(text) if p])
+
+            if eof:
                 break
-            text = segment.decode("utf-8", errors="ignore")
-            _pretokenize_pieces([p for p in split_pattern.split(text) if p])
 
     if pool is not None:
         pool.close()
