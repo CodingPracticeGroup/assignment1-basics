@@ -99,53 +99,6 @@ def pretokenize_text(text: str) -> dict[tuple[bytes, ...], int]:
     return freqs
 
 
-def pre_merge(
-    corpus: str,
-    special_tokens: list[str],
-) -> dict[tuple[bytes, ...], int]:
-    """
-    把整篇语料变成「词型（byte-tuple）-> 频次」的统计表，供 BPE 合并阶段使用。
-
-    这就是 pre-tokenization（预分词），也叫 pre-merge：它是「主要 tokenize / 合并
-    之前」的准备步骤。输入一篇 string 语料，输出可直接喂给合并循环的词频表。
-
-    步骤：
-    1. 特殊 Token 硬分割：re.escape 转义后按「或」拼成正则，遇到特殊 Token 就把
-       语料拦腰切断，保证 BPE 绝不跨越文档边界瞎合并。
-    2. 对每个切片做正则预分词（pretokenize_text），统计字节元组词型频次。
-    3. 切片够大且不止一个时，用 multiprocessing 并行统计，再合并各进程结果。
-    """
-    # 1. 特殊 Token 硬分割（hard boundaries）
-    if special_tokens:
-        escaped_specials = [re.escape(token) for token in special_tokens]
-        split_pattern = re.compile("|".join(escaped_specials))
-        pieces = split_pattern.split(corpus)
-    else:
-        pieces = [corpus]
-
-    pieces = [p for p in pieces if p]
-    if not pieces:
-        return {}
-
-    # 2. 预分词并汇总频次（大语料用多进程：每个 worker 动态抢任务）
-    word_freqs: dict[tuple[bytes, ...], int] = defaultdict(int)
-    total_len = sum(len(p) for p in pieces)
-
-    if total_len > 500_000 and len(pieces) > 1:
-        num_workers = min(multiprocessing.cpu_count(), 8)
-        with multiprocessing.Pool(processes=num_workers) as pool:
-            results = pool.map(pretokenize_text, pieces)
-        for res in results:
-            for k, v in res.items():
-                word_freqs[k] += v
-    else:
-        for piece in pieces:
-            for k, v in pretokenize_text(piece).items():
-                word_freqs[k] += v
-
-    return word_freqs
-
-
 def pre_merge_file(
     input_path: str | os.PathLike,
     special_tokens: list[str],
@@ -153,25 +106,17 @@ def pre_merge_file(
     num_workers: int | None = None,
 ) -> dict[tuple[bytes, ...], int]:
     """
-    从文件**流式**做 pre-tokenization（pre-merge），内存有界，结果与 pre_merge 完全一致。
+    从文件做 pre-tokenization（pre-merge）：把语料变成「词型（byte-tuple）-> 频次」，
+    供 BPE 合并阶段使用。
 
-    每次读一个 chunk，拼上上一轮留下的尾巴，然后从缓冲区里找到**最后一个特殊 Token**，
-    把它之前（含）的部分当作本次的完整文本去预分词；它之后的尾巴留到下一轮继续拼接。
-    切点紧跟 ASCII 特殊 Token，天然是合法 UTF-8 边界，所以不需要处理「字符被切开」的问题。
+    有特殊 Token 时**流式**处理（内存有界）：每次读一个 chunk，拼上上一轮留下的尾巴，
+    从缓冲区里找到最后一个特殊 Token，把它之前（含）的部分当作完整文本预分词；它之后的
+    尾巴留到下一轮。切点紧跟 ASCII 特殊 Token，天然是合法 UTF-8 边界，不需要处理字符被
+    切开的问题；尾巴实测最多 ~164 KiB（见 DATA.md 7.4），且不需要 seek（可用于 pipe）。
 
-    实测相邻特殊 Token 之间最长为 ~164 KiB（见 DATA.md 7.4），所以尾巴很小。这种「带尾巴」
-    的写法不需要 seek，也能用在不可回退的流（pipe / stdin）上。
-
-    没有特殊 Token 时没有安全切点，退回整篇 pre_merge（本作业的语料一定含 <|endoftext|>）。
+    没有特殊 Token 时没有安全切点，只能整篇读入（本作业的语料一定含 <|endoftext|>）。
     """
-    if not special_tokens:
-        with open(input_path, encoding="utf-8", errors="ignore") as f:
-            return pre_merge(f.read(), [])
-
     chunk_bytes = max(chunk_bytes, 1 << 20)
-    special_bytes = [token.encode("utf-8") for token in special_tokens]
-    split_pattern = re.compile("|".join(re.escape(token) for token in special_tokens))
-
     word_freqs: dict[tuple[bytes, ...], int] = defaultdict(int)
     if num_workers is None:
         num_workers = min(multiprocessing.cpu_count(), 8)
@@ -192,33 +137,40 @@ def pre_merge_file(
             for piece in pieces:
                 _accumulate(pretokenize_text(piece))
 
-    remainder = b""
-    with open(input_path, "rb") as f:
-        while True:
-            chunk = f.read(chunk_bytes)
-            eof = chunk == b""
-            buffer = remainder + chunk
+    if not special_tokens:
+        # 没有安全切点，整篇读入（本作业数据一定含特殊 Token，这里是兜底）
+        with open(input_path, encoding="utf-8", errors="ignore") as f:
+            _pretokenize_pieces([f.read()])
+    else:
+        special_bytes = [token.encode("utf-8") for token in special_tokens]
+        split_pattern = re.compile("|".join(re.escape(token) for token in special_tokens))
+        remainder = b""
+        with open(input_path, "rb") as f:
+            while True:
+                chunk = f.read(chunk_bytes)
+                eof = chunk == b""
+                buffer = remainder + chunk
 
-            if not eof:
-                # 切在缓冲区里最后一个特殊 Token 之后，尾巴留到下一轮
-                cut = -1
-                for token in special_bytes:
-                    pos = buffer.rfind(token)
-                    if pos != -1:
-                        cut = max(cut, pos + len(token))
-                if cut == -1:
-                    remainder = buffer
-                    continue
-                process, remainder = buffer[:cut], buffer[cut:]
-            else:
-                process, remainder = buffer, b""
+                if not eof:
+                    # 切在缓冲区里最后一个特殊 Token 之后，尾巴留到下一轮
+                    cut = -1
+                    for token in special_bytes:
+                        pos = buffer.rfind(token)
+                        if pos != -1:
+                            cut = max(cut, pos + len(token))
+                    if cut == -1:
+                        remainder = buffer
+                        continue
+                    process, remainder = buffer[:cut], buffer[cut:]
+                else:
+                    process, remainder = buffer, b""
 
-            if process:
-                text = process.decode("utf-8", errors="ignore")
-                _pretokenize_pieces([p for p in split_pattern.split(text) if p])
+                if process:
+                    text = process.decode("utf-8", errors="ignore")
+                    _pretokenize_pieces([p for p in split_pattern.split(text) if p])
 
-            if eof:
-                break
+                if eof:
+                    break
 
     if pool is not None:
         pool.close()
