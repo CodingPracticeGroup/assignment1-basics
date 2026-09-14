@@ -107,12 +107,15 @@ _Deliverable:_ A one-to-two sentence response.
 
 **Answer:**
 
-**(a)** 用 `run_train_bpe("data/TinyStoriesV2-GPT4-train.txt", vocab_size=10000, special_tokens=["<|endoftext|>"])` 训练，并把返回的 `(vocab, merges)` 序列化到磁盘。特殊 token 划分文档 + `multiprocessing` 并行预分词，使其远低于 handout 的 30 分钟 / 30GB 预算（提示：可 < 2 分钟）。
+**实测**（`run_train_bpe("data/TinyStoriesV2-GPT4-train.txt", vocab_size=10000, special_tokens=["<|endoftext|>"])`，本机 28 核 CPU）：
 
-- *时间与内存：***TODO（用上面的训练实测）**——用 `time` 计时、用 `psutil`（或 `resource.getrusage(RUSAGE_SELF).ru_maxrss`）测峰值内存。
-- *最长 token：***TODO**——`max(vocab.values(), key=len)`。预期是一个完整的高频短词或词片段；这对 TinyStories 很合理，因为该语料是简单、重复的英文儿童故事，收益最高的合并就是完整高频词。
+- **时间**：约 **155 s（~2.6 分钟）**，在 handout 的 30 分钟预算内（多进程预分词，8 worker）。
+- **内存**：峰值 RSS 约 **3.3 GiB**。早期“整篇读入”的版本峰值 ~37.7 GiB；改成**流式分块预分词**（按 `<|endoftext|>` 对齐）后降到 3.3 GiB。
+- **最长 token**：**15 字符**，例如 `b' accomplishment'`、`b' disappointment'`、`b' responsibility'`（都带前导空格）。
+- **序列化**：`artifacts/tinystories_10k_stream/{vocab,merges}.pkl`（vocab=10000，merges=9743）；训练脚本同时导出 GPT-2 文本格式 `vocab.json` / `merges.txt`，可用 `Tokenizer.from_files` 重新加载。
+- **是否合理**：合理。TinyStories 是简单、高度重复的英文儿童故事，10K 词表会把高频词整体合并，因此最长 token 落在 13–15 字符的常见长词（accomplishment / disappointment / responsibility …）上。
 
-**(b)** *“哪一步最耗时？”***TODO（用 cProfile 确认）**：预期是**覆盖整个语料的预分词**（正则匹配 + 构造字节元组）最耗时，因为合并循环只在去重后的词型表上操作。多进程预分词正是为了隐藏这一开销。
+**(b)** 在 TinyStories 上，**预分词（pre-tokenization）是主要瓶颈**：200 MB 子集实测 `pre_merge ≈ 12.3 s` vs `合并循环 ≈ 10.3 s`，放大到 2.1 GB 时预分词占比更大（handout 的 hint 也指出如此），开销来自“正则扫描全语料 + 构造字节元组 + 多进程 pickle/IPC”。合并循环内部的第一热点原本是每轮 `max(pair_freqs, key=pair_priority)` 扫描全部相邻对（`cProfile` 显示 `max` 约占 merge loop 的 57%）；已改用**最大堆 + lazy invalidation** 增量维护候选 pair，把每轮选择从 O(pair 数) 降到摊还 O(log heap)（实测 TS-200MB 9.8s→0.5s、OWT-1GB 119.3s→38.7s，merges 逐字节一致），此后大语料上 `apply_merge`（倒排索引只遍历受影响词型并重写它们）成为合并阶段的主要开销。
 
 ---
 
