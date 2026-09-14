@@ -43,7 +43,7 @@ def build_argparser() -> argparse.ArgumentParser:
     # = 327,680,000 tokens）。lr / warmup / AdamW / weight decay 需自己 tune。
     ap = argparse.ArgumentParser()
     # 数据
-    ap.add_argument("--train-bin", required=True, help="uint16 token id 二进制（np.memmap）")
+    ap.add_argument("--train-bin", required=True, help="token id 数组：原始 uint16 .bin（np.memmap）或 .npy（np.load mmap）")
     ap.add_argument("--val-bin", default=None)
     # 模型
     ap.add_argument("--vocab-size", type=int, required=True)
@@ -82,6 +82,17 @@ def build_argparser() -> argparse.ArgumentParser:
     return ap
 
 
+def _open_dataset(path: str):
+    """内存映射打开分词后的 token id 数组（handout P25/P27 推荐 np.memmap）。
+
+    - .npy  -> np.load(..., mmap_mode="r")（若用 np.save 保存）
+    - 其他  -> np.memmap(..., dtype=uint16)（原始 uint16 二进制，tokenize_dataset.py 的产物）
+    """
+    if str(path).endswith(".npy"):
+        return np.load(path, mmap_mode="r")
+    return np.memmap(path, dtype=np.uint16, mode="r")
+
+
 def _amp_settings(device: str, dtype: str):
     amp_device = device.split(":")[0]
     amp_dtype = {"float32": None, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
@@ -109,8 +120,8 @@ def main() -> None:
     device = args.device
     amp_device, amp_dtype = _amp_settings(device, args.dtype)
 
-    train_data = np.memmap(args.train_bin, dtype=np.uint16, mode="r")
-    val_data = np.memmap(args.val_bin, dtype=np.uint16, mode="r") if args.val_bin else None
+    train_data = _open_dataset(args.train_bin)
+    val_data = _open_dataset(args.val_bin) if args.val_bin else None
 
     model = BasicsTransformerLM(
         args.vocab_size,
