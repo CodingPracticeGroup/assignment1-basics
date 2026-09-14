@@ -5,9 +5,11 @@ the model code (and of the cross-entropy loss):
 
 * `no_einstein` -- plain PyTorch: `@` / `torch.matmul`, `reshape` /
   `transpose` / `permute` / slicing and manual index arithmetic.
-* `einstein` -- Einstein notation everywhere: `einops.rearrange` for
-  reshaping, `einops.einsum` / `torch.einsum` for contractions, and `einx`
-  for normalisation / gathering.
+* `einstein` -- Einstein notation everywhere, using exclusively the unified
+  `einx` API: `einx.dot` for every contraction, `einx.id` for axis
+  (re)structuring, and `einx.softmax` / `einx.logsumexp` / `einx.get_at` /
+  `einx.mean` / `einx.multiply` for normalisation, gathering and element-wise
+  arithmetic. (No `einops` and no `torch.einsum`.)
 
 The `CS336_NOTATION` environment variable picks which one the canonical
 `cs336_basics.model.*` and `cs336_basics.training.optimizers` modules

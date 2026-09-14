@@ -89,6 +89,9 @@ class CausalMultiHeadSelfAttention(nn.Module):
         self.v_proj = Linear(d_model, d_model, device=device, dtype=dtype)
         self.output_proj = Linear(d_model, d_model, device=device, dtype=dtype)
 
+        # 缓存的因果掩码（按 (s, device) 惰性重建，避免每次 forward 重新 tril）
+        self._causal_mask: torch.Tensor | None = None
+
     def forward(
         self,
         x: torch.Tensor,
@@ -112,8 +115,11 @@ class CausalMultiHeadSelfAttention(nn.Module):
             q = rope(q, token_positions.unsqueeze(1))
             k = rope(k, token_positions.unsqueeze(1))
 
-        # 下三角因果掩码
-        mask = torch.tril(torch.ones((s, s), device=x.device, dtype=torch.bool))
+        # 下三角因果掩码（按 (s, device) 缓存）
+        mask = self._causal_mask
+        if mask is None or mask.size(0) != s or mask.device != x.device:
+            mask = torch.tril(torch.ones((s, s), device=x.device, dtype=torch.bool))
+            self._causal_mask = mask
 
         attn_out = scaled_dot_product_attention(q, k, v, mask=mask)
 

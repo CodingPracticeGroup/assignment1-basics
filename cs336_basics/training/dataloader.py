@@ -11,27 +11,19 @@ def run_get_batch(
     """
     自 1D NumPy 数组语料库中随机采样输入 sequences 和对应偏移 1 位的前向预测 labels。
     """
-    # 限制起始位置最大上限，防止切片越界
+    # 合法起点范围：[0, len - context_length - 1]。
+    # labels 需要多取一位（start + context_length + 1 <= len），所以上界取开区间。
     max_idx = len(dataset) - context_length
-    
-    # 随机生成 batch_size 个起始位置
+
+    # 一次性采样所有起点，用高级索引一次取出整批（不再逐条切片 + torch.stack）。
+    # 高级索引返回可写副本，因此也不会再触发只读 np.memmap 的 “not writable” 警告。
     starts = np.random.randint(0, max_idx, size=batch_size)
+    offsets = np.arange(context_length + 1)
+    idx = starts[:, None] + offsets[None, :]
 
-    x_list = []
-    y_list = []
+    # 输入 x = 每行前 context_length 个；目标 y = 右移一位。.long() 保证 int64。
+    x = torch.from_numpy(np.ascontiguousarray(dataset[idx[:, :-1]])).long()
+    y = torch.from_numpy(np.ascontiguousarray(dataset[idx[:, 1:]])).long()
 
-    for start in starts:
-        # 输入 x 从 start 切片到 start + context_length
-        # 使用 torch.from_numpy 零拷贝桥接，随后调用 .long() 保证为 LongTensor (int64)
-        x_seg = torch.from_numpy(dataset[start : start + context_length]).long()
-        # 目标 y 向右偏移一位，从 start + 1 切片到 start + context_length + 1
-        y_seg = torch.from_numpy(dataset[start + 1 : start + context_length + 1]).long()
-        
-        x_list.append(x_seg)
-        y_list.append(y_seg)
-
-    # 堆叠并投送到指定的目标计算设备（如 cpu、mps 或 cuda:0）上
-    x = torch.stack(x_list).to(device)
-    y = torch.stack(y_list).to(device)
-    
-    return x, y
+    # 投送到目标设备（cpu / mps / cuda:0）
+    return x.to(device), y.to(device)

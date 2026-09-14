@@ -69,8 +69,8 @@ class AdamW(Optimizer):
                 state["step"] += 1
                 t = state["step"]
 
-                # 1. 权重衰减 (Weight Decay) 与梯度解耦应用
-                p.data -= lr * wd * p.data
+                # 1. 权重衰减 (Weight Decay) 与梯度解耦应用（乘法形式，与 torch.optim.AdamW 一致）
+                p.data.mul_(1.0 - lr * wd)
 
                 # 2. 动量更新
                 m = state["exp_avg"]
@@ -83,10 +83,11 @@ class AdamW(Optimizer):
 
                 # 3. 偏差校正与自适应学习率调整
                 bias_correction1 = 1.0 - beta1 ** t
-                bias_correction2 = 1.0 - beta2 ** t
-                alpha_t = lr * math.sqrt(bias_correction2) / bias_correction1
+                bias_correction2_sqrt = math.sqrt(1.0 - beta2 ** t)
 
-                # 4. 执行更新
-                p.data -= alpha_t * m / (torch.sqrt(v) + eps)
+                # 4. 执行更新（eps 放置与 torch.optim.AdamW 完全一致：denom = sqrt(v)/sqrt(bc2) + eps）
+                step_size = lr / bias_correction1
+                denom = torch.sqrt(v) / bias_correction2_sqrt + eps
+                p.data -= step_size * m / denom
 
         return loss
