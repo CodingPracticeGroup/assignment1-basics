@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import os
-import regex as re
-from collections import defaultdict
 import multiprocessing
+import os
+from collections import defaultdict
+
+import regex as re
 
 # ===================================================================
 # 🎯 大白话拆解 GPT-2 官方“切片机”正则表达式 PAT
@@ -178,8 +179,8 @@ def apply_merge(
         # 扣除旧词型贡献的相邻对频次，并从倒排索引里摘掉它
         for j in range(len(word_tuple) - 1):
             pair = (word_tuple[j], word_tuple[j + 1])
-            pair_freqs[pair] -= count
             touched.add(pair)
+            pair_freqs[pair] -= count
             # 不变量：当前词型里的 pair 一定已在倒排索引中（初始化时加入，清理只删频次为 0 的 pair）
             pair_to_words[pair].discard(word_tuple)
 
@@ -199,8 +200,8 @@ def apply_merge(
         word_freqs[t] = word_freqs.get(t, 0) + count
         for j in range(len(t) - 1):
             pair = (t[j], t[j + 1])
-            pair_freqs[pair] += count
             touched.add(pair)
+            pair_freqs[pair] += count
             pair_to_words.setdefault(pair, set()).add(t)
 
     # 及时清理掉频次已经降为 0 或以下的相邻对，缩减字典体积，提升查找速度
